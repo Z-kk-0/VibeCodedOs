@@ -3,6 +3,7 @@
 mod exceptions;
 mod stubs;
 
+use super::apic;
 use x86::exceptions::FIRST_NON_EXCEPTION;
 
 const STUB_SIZE: u64 = 16;
@@ -47,12 +48,14 @@ pub struct InterruptFrame {
 }
 
 extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) {
-    if frame.vector < FIRST_NON_EXCEPTION {
-        exceptions::handle(frame);
-    } else {
-        println!(
-            "Unexpected interrupt {} - no device is set up for it yet.",
-            frame.vector
-        );
+    match frame.vector {
+        vector if vector < FIRST_NON_EXCEPTION => exceptions::handle(frame),
+        apic::TIMER_VECTOR => {
+            crate::time::on_tick();
+            apic::end_of_interrupt();
+        }
+        // Spurious interrupts must *not* be acknowledged (SDM Vol. 3A, §11.9).
+        apic::SPURIOUS_VECTOR => {}
+        vector => println!("Unexpected interrupt {vector} - no device is set up for it yet."),
     }
 }

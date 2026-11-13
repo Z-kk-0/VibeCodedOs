@@ -13,6 +13,16 @@ pub unsafe fn write_u8(port: u16, value: u8) {
     }
 }
 
+/// Gives slow old devices time to process the previous port write, by
+/// writing to port 0x80 (POST diagnostics; nothing listens there).
+///
+/// # Safety
+/// Only meaningful on PC-compatible machines, where port 0x80 is unused.
+pub unsafe fn wait_a_moment() {
+    // SAFETY: forwarded to the caller.
+    unsafe { write_u8(0x80, 0) }
+}
+
 /// # Safety
 /// Reading a port can have side effects on the device (e.g. pop a FIFO).
 pub unsafe fn read_u8(port: u16) -> u8 {

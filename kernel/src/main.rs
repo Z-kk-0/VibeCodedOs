@@ -9,6 +9,7 @@ mod print;
 
 mod arch;
 mod serial;
+mod time;
 
 use arch::cpu;
 use boot_info::{BootInfo, MemoryKind};
@@ -24,8 +25,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("\nHematite kernel: the firmware is gone, the machine is ours.");
 
     arch::init();
-    println!("Own GDT and IDT loaded.");
+    println!("Own GDT and IDT loaded, legacy PIC silenced.");
     cpu::breakpoint(); // proves an exception can go through our handlers and come back
+
+    let timer = arch::start_timer(time::TICKS_PER_SECOND);
+    println!(
+        "APIC timer counts {} steps/s, interrupting {} times/s.",
+        timer.steps_per_second, timer.interrupts_per_second
+    );
+    // Hangs here if timer interrupts don't arrive – the boot test would notice.
+    time::sleep_ticks(10);
+    println!(
+        "Timer interrupts arrive: uptime {} ms.",
+        time::uptime_milliseconds()
+    );
 
     print_memory_summary(boot_info);
     println!("Hematite kernel ready.");
@@ -33,7 +46,21 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     if option_env!("HEMATITE_CRASH_TEST").is_some() {
         crash_test();
     }
-    cpu::halt_forever()
+    idle()
+}
+
+/// Nothing to do yet: sleep between ticks, show a sign of life now and then.
+fn idle() -> ! {
+    const HEARTBEAT_SECONDS: u64 = 10;
+    let mut next_heartbeat = HEARTBEAT_SECONDS * 1000;
+    loop {
+        cpu::wait_for_interrupt();
+        let uptime = time::uptime_milliseconds();
+        if uptime >= next_heartbeat {
+            println!("Still alive, uptime {} s.", uptime / 1000);
+            next_heartbeat += HEARTBEAT_SECONDS * 1000;
+        }
+    }
 }
 
 fn print_memory_summary(boot_info: &BootInfo) {

@@ -64,3 +64,7 @@ Short log of architecture decisions. Per entry: what, why, alternatives.
 **Decision:** The OS is called **Hematite** (the repo keeps its name, VibeCodedOs).
 **Why:** Hematite is Fe₂O₃ – iron oxide, the mineral that rust is made of. So it's literally "Rust, crystallized": an OS built from Rust, layer by layer. Iron oxide also stored the bits of early computers (ferrite core memory). And `b"HEMATITE"` is exactly 8 bytes – it fits the boot magic number perfectly.
 **Alternatives:** Ferrite (an obvious, common pick for Rust projects), Lodestone, Magnetite.
+## 011 – Timer: local APIC, measured with the PIT
+**Decision:** Periodic local APIC timer at 100 Hz on vector 0x20. Its speed is unknown, so at boot we let it count for 10 ms of PIT channel 2 (polled via port 0x61, no interrupts needed) and scale. The legacy 8259 PICs are remapped to 0x70+ and fully masked.
+**Why:** The APIC timer is per-core – the right base for a scheduler later, and for multi-core. The PIT has a fixed 1.193182 MHz clock, so it's a reliable ruler without parsing ACPI tables first.
+**Alternatives:** PIT as the tick source (one shared timer, slow I/O ports). HPET for calibration (needs ACPI parsing – later). TSC deadline mode (also needs a known TSC frequency).
