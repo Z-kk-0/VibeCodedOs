@@ -34,8 +34,10 @@ UEFI firmware (OVMF in QEMU)
               │    ├─ removes the identity map → lower half empty
               │    ├─ reclaims firmware + loader memory
               │    └─ self-checks: frames, heap (Vec, Box, String, BTreeMap)  memory/checks.rs
+              ├─ task::init: boot code becomes task 0, idle task created  kernel/src/task/
+              ├─ task::check: 2 busy tasks + 1 sleeper must interleave   task/checks.rs
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
-              └─ idle: hlt between ticks, heartbeat every 10 s
+              └─ heartbeat: boot task sleeps 10 s at a time; idle task runs hlt
 ```
 
 Address space (upper half = kernel, lower half = future user programs):
@@ -48,7 +50,9 @@ Address space (upper half = kernel, lower half = future user programs):
 | `0x0000_0000_0000_0000` | empty – for user programs | |
 
 All interrupts enter through one path: a 16-byte stub per vector → `interrupt_common` saves all
-registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 008).
+registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 008). The dispatcher
+returns the frame to resume; on a timer tick or `int 0x30` (sleep/exit) that may be another task's
+frame on another stack – that is the whole task switch (DECISIONS 017).
 
 ## Crates
 
@@ -61,6 +65,7 @@ registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 0
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
+| `scheduling` | any + host | Run queue: round robin, sleeping, idle fallback, freeing exited tasks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers). Unit-tested. |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
@@ -79,18 +84,21 @@ Done:
 - [x] Own page tables, higher-half kernel with W^X, physical memory window, boot memory
       reclaimed (DECISIONS 015)
 - [x] Kernel heap: `alloc` works – Box, Vec, String, BTreeMap (DECISIONS 016)
+- [x] Preemptive kernel tasks: spawn, sleep, exit, round robin at 100 Hz (DECISIONS 017)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Tasks and scheduler** – timer-driven switching by swapping `InterruptFrame`s.
-2. **User mode + syscalls** – ring 3, `syscall`/`sysret`, first user program in the lower half.
-3. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
-4. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **User mode + syscalls** – ring 3, `syscall`/`sysret`, a process = own lower half + tasks,
+   first user program.
+2. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
+3. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
 - Single core. `sync::SpinLock` disables interrupts while held, so it's already safe against
   interrupt handlers; it will need no change for multi-core.
 - Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
+- Tasks: 16 KiB stacks without guard pages (an overflow corrupts the heap silently), no priorities,
+  no blocking on events yet – only sleeping. Exceptions in any task still stop the whole machine.
 - The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.
 - The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep
   it uncached. Proper per-device mappings come with the first real drivers.

@@ -44,7 +44,7 @@ readable but not slow, files under ~200 lines, names that say what things are, c
 the edges, code and docs in English.
 
 **Where does new code go?**
-- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `frame_table`, `paging`, `boot_info` or a
+- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
   new small crate (add it to the workspace `members` *and* `default-members`), with unit tests.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
@@ -63,5 +63,9 @@ the edges, code and docs in English.
   `ExitBootServices` (e.g. it hangs while still in the firmware).
 - **Physical addresses aren't pointers.** The kernel runs in the higher half; reach physical memory
   only through `memory::physical_to_pointer` (the window). Low addresses fault – on purpose.
+- **`println!` takes a lock.** In panic, exception or other "something is already broken" paths use
+  `emergency_println!`, which can't deadlock.
+- **Locks switch interrupts off** (`sync::SpinLock`), so a task can't be preempted while holding one
+  – keep critical sections short, and never call `sleep` or `exit` while holding a lock.
 - **Debugging a hang:** `cargo xtask run`, then look at the last serial line. QEMU's `-d int`
   (add it in `xtask/src/qemu.rs`) logs every interrupt and exception.

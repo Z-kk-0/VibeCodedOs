@@ -1,12 +1,18 @@
 //! The single Rust entry point for every interrupt and exception.
 
 mod exceptions;
+mod frame;
 mod stubs;
+
+pub use frame::InterruptFrame;
 
 use super::apic;
 use x86::exceptions::FIRST_NON_EXCEPTION;
 
 const STUB_SIZE: u64 = 16;
+
+/// Software interrupt a task raises to give up the CPU (`int 0x30`).
+pub const YIELD_VECTOR: u64 = 0x30;
 
 unsafe extern "C" {
     /// Start of the stub block in `stubs.rs`. Only its address matters.
@@ -17,45 +23,26 @@ pub fn stub_address(vector: u64) -> u64 {
     (&raw const interrupt_stubs) as u64 + vector * STUB_SIZE
 }
 
-/// Everything the CPU and our stub saved, lowest address first.
-/// Must match the push order in `stubs.rs`.
-#[repr(C)]
-pub struct InterruptFrame {
-    pub r15: u64,
-    pub r14: u64,
-    pub r13: u64,
-    pub r12: u64,
-    pub r11: u64,
-    pub r10: u64,
-    pub r9: u64,
-    pub r8: u64,
-    pub rdi: u64,
-    pub rsi: u64,
-    pub rbp: u64,
-    pub rbx: u64,
-    pub rdx: u64,
-    pub rcx: u64,
-    pub rax: u64,
-    // Pushed by our stub.
-    pub vector: u64,
-    pub error_code: u64,
-    // Pushed by the CPU.
-    pub rip: u64,
-    pub cs: u64,
-    pub rflags: u64,
-    pub rsp: u64,
-    pub ss: u64,
+/// Asks the scheduler to run another task now, through the same path a
+/// timer interrupt takes – so there is only one way to switch tasks.
+pub fn yield_now() {
+    // SAFETY: our IDT handles this vector and returns here (eventually).
+    unsafe { core::arch::asm!("int 0x30", options(nomem, nostack)) };
 }
 
-extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) {
+/// Returns the frame to resume: `frame` itself, or another task's.
+extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     match frame.vector {
         vector if vector < FIRST_NON_EXCEPTION => exceptions::handle(frame),
         apic::TIMER_VECTOR => {
             crate::time::on_tick();
             apic::end_of_interrupt();
+            return crate::task::switch(frame);
         }
+        YIELD_VECTOR => return crate::task::switch(frame),
         // Spurious interrupts must *not* be acknowledged (SDM Vol. 3A, §11.9).
         apic::SPURIOUS_VECTOR => {}
         vector => println!("Unexpected interrupt {vector} - no device is set up for it yet."),
     }
+    frame
 }

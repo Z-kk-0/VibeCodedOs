@@ -12,6 +12,7 @@ pub mod port;
 mod start;
 
 pub use apic::TimerSetup;
+pub use interrupts::{InterruptFrame, yield_now};
 
 /// Installs our own segment and interrupt tables, replacing the firmware's,
 /// and silences the legacy interrupt controllers.
@@ -26,7 +27,7 @@ pub fn init() {
 }
 
 /// Starts the periodic timer interrupt and turns interrupts on.
-/// Each tick calls `crate::time::on_tick`.
+/// Each tick calls `crate::time::on_tick`, then `crate::task::switch`.
 pub fn start_timer(interrupts_per_second: u32) -> TimerSetup {
     // SAFETY: `init` ran (IDT present, PIC silenced); every vector has a
     // handler, so enabling interrupts is fine afterwards.

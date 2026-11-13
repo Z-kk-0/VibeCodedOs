@@ -8,4 +8,5 @@ boot_info = { path = "../boot_info" }
 frame_table = { path = "../frame_table" }
 heap = { path = "../heap" }
 paging = { path = "../paging" }
+scheduling = { path = "../scheduling" }
 x86 = { path = "../x86" }

@@ -14,6 +14,7 @@ mod arch;
 mod memory;
 mod serial;
 mod sync;
+mod task;
 mod time;
 
 use arch::cpu;
@@ -47,25 +48,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     memory::start(boot_info);
 
+    task::init();
+    task::check();
+
     println!("Hematite kernel ready.");
 
     if option_env!("HEMATITE_CRASH_TEST").is_some() {
         crash_test();
     }
-    idle()
+    heartbeat()
 }
 
-/// Nothing to do yet: sleep between ticks, show a sign of life now and then.
-fn idle() -> ! {
-    const HEARTBEAT_SECONDS: u64 = 10;
-    let mut next_heartbeat = HEARTBEAT_SECONDS * 1000;
+/// Nothing else to do yet: the boot task sleeps (the idle task halts the
+/// CPU meanwhile) and shows a sign of life now and then.
+fn heartbeat() -> ! {
+    const HEARTBEAT_TICKS: u64 = 10 * time::TICKS_PER_SECOND as u64;
     loop {
-        cpu::wait_for_interrupt();
-        let uptime = time::uptime_milliseconds();
-        if uptime >= next_heartbeat {
-            println!("Still alive, uptime {} s.", uptime / 1000);
-            next_heartbeat += HEARTBEAT_SECONDS * 1000;
-        }
+        task::sleep(HEARTBEAT_TICKS);
+        println!(
+            "Still alive, uptime {} s.",
+            time::uptime_milliseconds() / 1000
+        );
     }
 }
 
@@ -81,6 +84,6 @@ fn crash_test() {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    println!("\nKERNEL PANIC: {info}");
+    emergency_println!("\nKERNEL PANIC: {info}");
     cpu::halt_forever()
 }

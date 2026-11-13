@@ -10,7 +10,7 @@ use x86::exceptions::{BREAKPOINT, PAGE_FAULT, describe_page_fault, name};
 pub fn handle(frame: &mut InterruptFrame) {
     if frame.vector == BREAKPOINT {
         // `int3` is one byte and `rip` already points past it: just return.
-        println!("Breakpoint at {:#x} - handled, continuing.", frame.rip);
+        emergency_println!("Breakpoint at {:#x} - handled, continuing.", frame.rip);
         return;
     }
     report(frame);
@@ -18,25 +18,27 @@ pub fn handle(frame: &mut InterruptFrame) {
 }
 
 fn report(frame: &InterruptFrame) {
-    println!();
-    println!(
+    emergency_println!();
+    emergency_println!(
         "EXCEPTION: {} (#{}), error code {:#x}",
         name(frame.vector),
         frame.vector,
         frame.error_code
     );
     if frame.vector == PAGE_FAULT {
-        println!(
+        emergency_println!(
             "  {} at address {:#x}",
             describe_page_fault(frame.error_code),
             cpu::page_fault_address()
         );
     }
-    println!(
+    emergency_println!(
         "  rip {:#018x}  cs {:#x}  rflags {:#x}",
-        frame.rip, frame.cs, frame.rflags
+        frame.rip,
+        frame.cs,
+        frame.rflags
     );
-    println!("  rsp {:#018x}  ss {:#x}", frame.rsp, frame.ss);
+    emergency_println!("  rsp {:#018x}  ss {:#x}", frame.rsp, frame.ss);
     let registers = [
         ("rax", frame.rax),
         ("rbx", frame.rbx),
@@ -55,10 +57,10 @@ fn report(frame: &InterruptFrame) {
         ("r15", frame.r15),
     ];
     for row in registers.chunks(4) {
-        print!(" ");
+        emergency_print!(" ");
         for (name, value) in row {
-            print!(" {name} {value:#018x}");
+            emergency_print!(" {name} {value:#018x}");
         }
-        println!();
+        emergency_println!();
     }
 }

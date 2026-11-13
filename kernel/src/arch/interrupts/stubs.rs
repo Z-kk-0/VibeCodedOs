@@ -4,7 +4,8 @@
 //! error code. Each stub evens that out (pushes a fake 0 error code if the
 //! CPU didn't), pushes its vector number and jumps to `interrupt_common`.
 //! That one saves all registers, so the Rust side gets one uniform
-//! `InterruptFrame` and can change it before we return (later: switching tasks).
+//! `InterruptFrame` – and may answer with a different frame to resume,
+//! which is how tasks are switched (DECISIONS.md, 017).
 //!
 //! Every stub sits in its own 16-byte slot, so stub N lives at
 //! `interrupt_stubs + N * 16` – no address table needed.
@@ -53,6 +54,10 @@ core::arch::global_asm!(
     // The ABI requires the direction flag to be clear on function entry.
     "    cld",
     "    call {dispatch}",
+    // The dispatcher returns the frame to resume – usually the same one,
+    // after a task switch another task's frame on another stack.
+    // Switching the stack pointer to it *is* the task switch.
+    "    movq %rax, %rsp",
     "    popq %r15",
     "    popq %r14",
     "    popq %r13",

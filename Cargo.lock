@@ -26,6 +26,7 @@ dependencies = [
  "frame_table",
  "heap",
  "paging",
+ "scheduling",
  "x86",
 ]
 
@@ -40,6 +41,10 @@ dependencies = [
 
 [[package]]
 name = "paging"
+version = "0.1.0"
+
+[[package]]
+name = "scheduling"
 version = "0.1.0"
 
 [[package]]

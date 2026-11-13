@@ -8,7 +8,7 @@ use x86::gdt::{KERNEL_CODE_DESCRIPTOR, KERNEL_DATA_DESCRIPTOR, TaskStateSegment,
 
 /// Selectors = byte offsets into the GDT.
 pub const KERNEL_CODE: u16 = 0x08;
-const KERNEL_DATA: u16 = 0x10;
+pub const KERNEL_DATA: u16 = 0x10;
 const TASK_STATE: u16 = 0x18;
 
 /// Interrupt Stack Table slot (1-based) used for double faults.
