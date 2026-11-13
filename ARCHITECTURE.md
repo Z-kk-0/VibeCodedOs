@@ -25,7 +25,9 @@ UEFI firmware (OVMF in QEMU)
               ├─ own GDT + TSS, IDT, legacy PIC masked                   kernel/src/arch/
               ├─ int3 round trip (tests the interrupt path)
               ├─ APIC timer calibrated with the PIT, 100 Hz, sti         kernel/src/arch/apic.rs
-              ├─ waits 10 ticks, prints memory summary
+              ├─ waits 10 ticks, prints the memory map
+              ├─ frame table: every RAM frame + its state,
+              │  self-check allocates/writes/frees 3 frames                kernel/src/memory/, frame_table/
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ idle: hlt between ticks, heartbeat every 10 s
 ```
@@ -42,6 +44,7 @@ registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 0
 | `boot_info` | both + host | The loader→kernel contract (`BootInfo`, memory regions). No UEFI types. |
 | `elf` | any + host | Pure ELF parsing/loading/relocation. Unit-tested on the host. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers). Unit-tested. |
+| `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
 Rule of thumb: logic that is "bytes in, bytes out" goes into a host-testable crate with unit tests;
@@ -55,20 +58,25 @@ Done:
 - [x] Serial output, GDT/TSS/IDT, exception reports (double fault on its own stack)
 - [x] APIC timer at 100 Hz, uptime
 - [x] Host unit tests + QEMU boot/crash tests, cross-platform `cargo xtask`
+- [x] Physical frame allocator: frame table with per-frame state (DECISIONS 014)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Physical page allocator** – hand out free 4 KiB frames from the `BootInfo` memory map.
-2. **Own page tables + higher-half kernel** – kernel moves to the top of the address space;
-   the lower half becomes per-process.
-3. **Kernel heap** – `alloc` (Box, Vec) on top of the page allocator.
-4. **Tasks and scheduler** – timer-driven switching by swapping `InterruptFrame`s.
-5. **User mode + syscalls** – ring 3, `syscall`/`sysret`, first user program.
-6. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
-7. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **Own page tables + higher-half kernel** – kernel moves to the top of the address space;
+   the lower half becomes per-process. Physical memory gets a fixed window (only
+   `memory::physical_to_pointer` changes). Afterwards reclaim `FirmwareReclaimable` and
+   `LoaderReclaimable` memory into the frame table.
+2. **Kernel heap** – `alloc` (Box, Vec) on top of the frame allocator.
+3. **Tasks and scheduler** – timer-driven switching by swapping `InterruptFrame`s.
+4. **User mode + syscalls** – ring 3, `syscall`/`sysret`, first user program.
+5. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
+6. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
-- Single core. No locks yet – interrupts just don't touch shared data except atomics.
-- Runs on the firmware's identity-mapped page tables until roadmap step 2.
+- Single core. `sync::SpinLock` disables interrupts while held, so it's already safe against
+  interrupt handlers; it will need no change for multi-core.
+- Runs on the firmware's identity-mapped page tables until roadmap step 1. Until then ~45 MiB of
+  firmware memory stays unused (it holds those page tables).
+- Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

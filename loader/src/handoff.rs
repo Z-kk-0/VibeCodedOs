@@ -126,10 +126,12 @@ fn write_boot_info(
 
 fn kind_of(memory_type: MemoryType) -> MemoryKind {
     match memory_type {
-        // Boot services memory is free now that the firmware is gone.
-        MemoryType::CONVENTIONAL
-        | MemoryType::BOOT_SERVICES_CODE
-        | MemoryType::BOOT_SERVICES_DATA => MemoryKind::Usable,
+        MemoryType::CONVENTIONAL => MemoryKind::Usable,
+        // Free now that the firmware is gone – except it still holds the
+        // page tables in use. See `MemoryKind::FirmwareReclaimable`.
+        MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
+            MemoryKind::FirmwareReclaimable
+        }
         MemoryType::LOADER_CODE | MemoryType::LOADER_DATA => MemoryKind::LoaderReclaimable,
         MemoryType::HEMATITE_KERNEL => MemoryKind::Kernel,
         MemoryType::HEMATITE_BOOT_INFO => MemoryKind::BootInfo,

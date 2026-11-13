@@ -20,6 +20,16 @@ pub unsafe fn enable_interrupts() {
     unsafe { asm!("sti", options(nomem, nostack)) };
 }
 
+/// Turns interrupts off and reports whether they were on before, so the
+/// caller can restore the previous state with `enable_interrupts`.
+pub fn disable_interrupts() -> bool {
+    const INTERRUPT_FLAG: u64 = 1 << 9; // in RFLAGS, Intel SDM Vol. 1, §3.4.3
+    let flags: u64;
+    // SAFETY: reads RFLAGS via the stack and clears IF; no other effects.
+    unsafe { asm!("pushfq", "pop {}", "cli", out(reg) flags, options(nomem)) };
+    flags & INTERRUPT_FLAG != 0
+}
+
 /// Sleeps until the next interrupt arrives. Interrupts must be enabled,
 /// otherwise this never returns.
 pub fn wait_for_interrupt() {

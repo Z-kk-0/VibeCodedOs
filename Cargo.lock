@@ -11,10 +11,15 @@ name = "elf"
 version = "0.1.0"
 
 [[package]]
+name = "frame_table"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
  "boot_info",
+ "frame_table",
  "x86",
 ]
 

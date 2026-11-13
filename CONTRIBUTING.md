@@ -44,7 +44,8 @@ readable but not slow, files under ~200 lines, names that say what things are, c
 the edges, code and docs in English.
 
 **Where does new code go?**
-- Pure logic (parsing, encoding, math) → `elf`, `x86`, `boot_info` or a new small crate, with unit tests.
+- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `frame_table`, `boot_info` or a
+  new small crate (add it to the workspace `members` *and* `default-members`), with unit tests.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
   if it can fail silently, print something the boot test can check.

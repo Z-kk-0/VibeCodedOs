@@ -74,6 +74,10 @@ pub enum MemoryKind {
     BootInfo,
     /// Loader code and data. Free once we are sure nothing points into it.
     LoaderReclaimable,
+    /// What the firmware used while booting ("boot services" memory). Free
+    /// in principle – but it still holds the page tables the CPU is using,
+    /// so only reclaim it after switching to our own.
+    FirmwareReclaimable,
     /// ACPI tables. Free after the kernel has read them.
     AcpiReclaimable,
     /// Firmware needs this even after boot. Never touch.
@@ -83,15 +87,22 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 7] = [
+    pub const ALL: [MemoryKind; 8] = [
         MemoryKind::Usable,
         MemoryKind::Kernel,
         MemoryKind::BootInfo,
         MemoryKind::LoaderReclaimable,
+        MemoryKind::FirmwareReclaimable,
         MemoryKind::AcpiReclaimable,
         MemoryKind::AcpiNvs,
         MemoryKind::Reserved,
     ];
+
+    /// RAM that will be ours one day (now or after reclaiming). Excludes
+    /// ACPI NVS and reserved ranges, which are often device memory.
+    pub fn is_ram_we_manage(self) -> bool {
+        !matches!(self, MemoryKind::AcpiNvs | MemoryKind::Reserved)
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -99,6 +110,7 @@ impl MemoryKind {
             MemoryKind::Kernel => "kernel",
             MemoryKind::BootInfo => "boot info",
             MemoryKind::LoaderReclaimable => "loader (reclaimable)",
+            MemoryKind::FirmwareReclaimable => "firmware (reclaimable)",
             MemoryKind::AcpiReclaimable => "ACPI (reclaimable)",
             MemoryKind::AcpiNvs => "ACPI NVS",
             MemoryKind::Reserved => "reserved",

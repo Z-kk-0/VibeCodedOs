@@ -8,11 +8,13 @@
 mod print;
 
 mod arch;
+mod memory;
 mod serial;
+mod sync;
 mod time;
 
 use arch::cpu;
-use boot_info::{BootInfo, MemoryKind};
+use boot_info::BootInfo;
 use serial::Serial;
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
@@ -40,7 +42,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         time::uptime_milliseconds()
     );
 
-    print_memory_summary(boot_info);
+    memory::print_map(boot_info);
+    let frames = memory::init(boot_info);
+    println!(
+        "Frame table: {} frames tracked, {} KiB table at {:#x}, {} MiB free.",
+        frames.frames_tracked,
+        frames.table_bytes / 1024,
+        frames.table_address,
+        memory::free_frame_count() * 4 / 1024
+    );
+    memory::self_check();
+
     println!("Hematite kernel ready.");
 
     if option_env!("HEMATITE_CRASH_TEST").is_some() {
@@ -59,21 +71,6 @@ fn idle() -> ! {
         if uptime >= next_heartbeat {
             println!("Still alive, uptime {} s.", uptime / 1000);
             next_heartbeat += HEARTBEAT_SECONDS * 1000;
-        }
-    }
-}
-
-fn print_memory_summary(boot_info: &BootInfo) {
-    let regions = boot_info.memory_regions();
-    println!("Physical memory ({} regions):", regions.len());
-    for kind in MemoryKind::ALL {
-        let bytes: u64 = regions
-            .iter()
-            .filter(|region| region.kind == kind)
-            .map(|region| region.size())
-            .sum();
-        if bytes > 0 {
-            println!("  {:<22}{:>9} KiB", kind.name(), bytes / 1024);
         }
     }
 }

@@ -82,3 +82,8 @@ Handles follow the same rules.
 **Decision:** Build, run and test commands are a small Rust program (`xtask/`, no dependencies), called via a cargo alias: `cargo xtask build | run | boot-test | test`. It replaces the earlier PowerShell scripts.
 **Why:** Handover-readiness – works on Windows, Linux and macOS without porting shell scripts, and stays in our one language. Reading the serial log as bytes also fixed PowerShell's encoding issues.
 **Alternatives:** PowerShell (Windows-centric), Makefile/just (extra tools, shell differences per OS).
+## 014 – Physical memory: a frame table with an embedded free list
+**Decision:** Every 4 KiB frame of RAM gets an 8-byte entry with its state (`Unavailable`, `Free`, `Allocated`). Free entries are chained into a list *through the table itself*, so allocate and free are O(1). The table lives in the first usable region big enough (crate `frame_table`, host-tested); access goes through a `SpinLock` that also disables interrupts. Freeing a frame that isn't allocated panics.
+**Why:** The ownership model (012) needs to know who each frame belongs to – the state field is where "moved to process X" or "shared by n" will go. Double frees are caught instead of silently corrupting memory. Cost: 0.2 % of RAM.
+**Alternatives:** Bitmap (compact, but O(n) search and no room for ownership state). Free list stored inside the free frames (no metadata at all). Buddy allocator (contiguous multi-frame blocks – add later if DMA needs it).
+**Also:** Firmware "boot services" memory is a separate `FirmwareReclaimable` kind: it still contains the page tables the CPU uses, so it's only reclaimed after we switch to our own (roadmap step 2). Same for loader memory.
