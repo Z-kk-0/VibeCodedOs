@@ -1,6 +1,8 @@
-//! Memory management: physical frames (DECISIONS.md, 014) and page tables
-//! (DECISIONS.md, 015).
+//! Memory management: physical frames (DECISIONS.md, 014), page tables
+//! (015) and the kernel heap (016).
 
+mod allocator;
+mod checks;
 mod frames;
 pub mod paging;
 
@@ -15,7 +17,7 @@ pub fn physical_to_pointer(address: u64) -> *mut u8 {
 }
 
 /// Takes over memory management from the loader, step by step, and checks
-/// each step at boot.
+/// each step at boot. The heap (`alloc`) works only after this.
 pub fn start(boot_info: &BootInfo) {
     print_map(boot_info);
 
@@ -42,7 +44,8 @@ pub fn start(boot_info: &BootInfo) {
         free_frame_count() * 4 / 1024
     );
 
-    check_frames();
+    checks::frames();
+    checks::heap();
 }
 
 /// Prints how much memory of each kind the boot memory map reports.
@@ -59,35 +62,4 @@ fn print_map(boot_info: &BootInfo) {
             println!("  {:<24}{:>9} KiB", kind.name(), bytes / 1024);
         }
     }
-}
-
-/// Allocates a few frames, writes to them, reads back, frees them – a boot
-/// time proof that the allocator hands out real, distinct, usable memory.
-fn check_frames() {
-    const FRAMES: usize = 3;
-    const PATTERN: u64 = u64::from_le_bytes(*b"\0\0\0\0HEMA");
-    let free_before = free_frame_count();
-    let frames = [(); FRAMES].map(|()| allocate_frame().expect("out of memory during self-check"));
-
-    for (index, frame) in frames.iter().enumerate() {
-        let pointer = physical_to_pointer(frame.start_address()).cast::<u64>();
-        // SAFETY: we own these freshly allocated frames exclusively.
-        unsafe { pointer.write_volatile(PATTERN | index as u64) };
-    }
-    for (index, frame) in frames.iter().enumerate() {
-        let pointer = physical_to_pointer(frame.start_address()).cast::<u64>();
-        // SAFETY: as above.
-        let value = unsafe { pointer.read_volatile() };
-        assert_eq!(value, PATTERN | index as u64, "frame {index} lost its data");
-    }
-    for frame in frames {
-        free_frame(frame);
-    }
-    assert_eq!(free_frame_count(), free_before, "self-check leaked frames");
-    println!(
-        "Frame allocator works: used and returned frames at {:#x}, {:#x}, {:#x}.",
-        frames[0].start_address(),
-        frames[1].start_address(),
-        frames[2].start_address()
-    );
 }

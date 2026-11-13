@@ -70,6 +70,12 @@ pub fn flush_translation_cache() {
     }
 }
 
+/// Makes the CPU forget the cached translation of one page (`invlpg`).
+pub fn flush_translation(virtual_address: u64) {
+    // SAFETY: only drops a cached translation; the next access re-reads the tables.
+    unsafe { asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags)) };
+}
+
 /// Whether the no-execute bit in page tables is active (EFER.NXE).
 pub fn no_execute_enabled() -> bool {
     const EFER: u32 = 0xC000_0080;

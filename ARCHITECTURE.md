@@ -33,12 +33,19 @@ UEFI firmware (OVMF in QEMU)
               │    ├─ frame table: every RAM frame + its state           frame_table/
               │    ├─ removes the identity map → lower half empty
               │    ├─ reclaims firmware + loader memory
-              │    └─ self-check: allocate/write/free 3 frames
+              │    └─ self-checks: frames, heap (Vec, Box, String, BTreeMap)  memory/checks.rs
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ idle: hlt between ticks, heartbeat every 10 s
 ```
 
-Address space layout: see the docs at the top of `boot_info/src/lib.rs`.
+Address space (upper half = kernel, lower half = future user programs):
+
+| Start | What | Defined in |
+|---|---|---|
+| `0xFFFF_FFFF_8000_0000` | kernel image (W^X) | `boot_info` |
+| `0xFFFF_FF00_0000_0000` | kernel heap, 512 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
+| `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
+| `0x0000_0000_0000_0000` | empty – for user programs | |
 
 All interrupts enter through one path: a 16-byte stub per vector → `interrupt_common` saves all
 registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 008).
@@ -53,6 +60,7 @@ registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 0
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
+| `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers). Unit-tested. |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
@@ -70,20 +78,19 @@ Done:
 - [x] Physical frame allocator: frame table with per-frame state (DECISIONS 014)
 - [x] Own page tables, higher-half kernel with W^X, physical memory window, boot memory
       reclaimed (DECISIONS 015)
+- [x] Kernel heap: `alloc` works – Box, Vec, String, BTreeMap (DECISIONS 016)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Kernel heap** – `alloc` (Box, Vec) on top of the frame allocator, mapped in its own
-   upper-half region.
-2. **Tasks and scheduler** – timer-driven switching by swapping `InterruptFrame`s.
-3. **User mode + syscalls** – ring 3, `syscall`/`sysret`, first user program in the lower half.
-4. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
-5. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **Tasks and scheduler** – timer-driven switching by swapping `InterruptFrame`s.
+2. **User mode + syscalls** – ring 3, `syscall`/`sysret`, first user program in the lower half.
+3. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
+4. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
 - Single core. `sync::SpinLock` disables interrupts while held, so it's already safe against
   interrupt handlers; it will need no change for multi-core.
-- Page tables have no lock: only boot code changes mappings so far (`kernel/src/memory/paging.rs`).
+- Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
 - The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.
 - The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep
   it uncached. Proper per-device mappings come with the first real drivers.

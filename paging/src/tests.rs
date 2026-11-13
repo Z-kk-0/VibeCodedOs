@@ -195,3 +195,31 @@ fn canonical_addresses() {
     assert!(!is_canonical(0x0000_8000_0000_0000));
     assert!(!is_canonical(0xFFFF_7FFF_FFFF_FFFF));
 }
+
+#[test]
+fn unmapping_returns_the_frame_and_removes_the_page() {
+    let mut memory = FakeMemory::new(16);
+    let mut mapper = mapper(&mut memory);
+    mapper
+        .map(HIGH, 0x7000, PageSize::Normal, KERNEL_CODE)
+        .unwrap();
+
+    assert_eq!(mapper.unmap(HIGH), Ok(0x7000));
+    assert_eq!(mapper.translate(HIGH), None);
+    assert_eq!(mapper.unmap(HIGH), Err(UnmapError::NotMapped));
+    // The page can be mapped again, even to another frame.
+    mapper
+        .map(HIGH, 0x8000, PageSize::Normal, KERNEL_CODE)
+        .unwrap();
+}
+
+#[test]
+fn parts_of_huge_pages_cannot_be_unmapped() {
+    let mut memory = FakeMemory::new(16);
+    let mut mapper = mapper(&mut memory);
+    mapper
+        .map(0, 0, PageSize::Huge, Flags::KERNEL_DATA)
+        .unwrap();
+    assert_eq!(mapper.unmap(0x1000), Err(UnmapError::HugePage));
+    assert_eq!(mapper.unmap(0x4000_0000), Err(UnmapError::NotMapped));
+}

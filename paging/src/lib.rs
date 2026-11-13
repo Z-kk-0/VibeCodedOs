@@ -14,9 +14,11 @@ mod entry;
 mod mapper;
 #[cfg(test)]
 mod tests;
+mod unmap;
 
 pub use entry::Flags;
 pub use mapper::{MapError, Mapper, PageSize, PageTable, TableMemory, Translation};
+pub use unmap::UnmapError;
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;

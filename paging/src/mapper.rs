@@ -59,7 +59,7 @@ pub struct Translation {
 }
 
 pub struct Mapper<M> {
-    root: u64,
+    pub(crate) root: u64,
     memory: M,
     use_no_execute: bool,
 }
@@ -186,7 +186,7 @@ impl<M: TableMemory> Mapper<M> {
         }
     }
 
-    fn entry(&mut self, table: u64, level: u32, virtual_address: u64) -> *mut u64 {
+    pub(crate) fn entry(&mut self, table: u64, level: u32, virtual_address: u64) -> *mut u64 {
         let index = (virtual_address >> (12 + 9 * (level - 1))) as usize % ENTRIES_PER_TABLE;
         // SAFETY: `table` is valid per the TableMemory contract; index < 512.
         unsafe { self.memory.table(table).cast::<u64>().add(index) }

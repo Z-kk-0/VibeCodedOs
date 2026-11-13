@@ -15,11 +15,16 @@ name = "frame_table"
 version = "0.1.0"
 
 [[package]]
+name = "heap"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
  "boot_info",
  "frame_table",
+ "heap",
  "paging",
  "x86",
 ]

@@ -3,6 +3,9 @@
 #![no_std]
 #![no_main]
 
+// Box, Vec, String & co., backed by our heap (memory/allocator.rs).
+extern crate alloc;
+
 // First, so the macros are visible in all modules below.
 #[macro_use]
 mod print;
