@@ -48,3 +48,9 @@ Short log of architecture decisions. Per entry: what, why, alternatives.
 ## 007 – First kernel output: serial port
 **Decision:** COM1 (16550 UART), polled. Screen output (GOP framebuffer) comes later.
 **Why:** ~40 lines, works without any setup, and QEMU pipes it to the host – so boots can be tested headless (`tools/boot-test.ps1`).
+
+## 008 – One door for all interrupts
+**Decision:** All 256 vectors get a tiny assembly stub (uniform 16-byte slots, generated with `.rept`) that pushes the vector number and jumps to one common path. That path saves *all* registers into an `InterruptFrame` and calls one Rust function, which may modify the frame before `iretq`.
+**Why:** One place where every interrupt arrives, with the full CPU state as a plain struct. Later the scheduler can switch tasks just by swapping that frame – no separate context-switch code. Uniform slots mean the IDT is computed (`base + 16·n`), no address table.
+**Alternatives:** `extern "x86-interrupt"` functions (unstable Rust, only saves what each handler uses). One hand-written handler per exception (lots of copies, no common frame).
+**Also:** Double fault runs on its own stack (TSS IST 1), so a broken kernel stack still gets reported. Every boot runs an `int3` round trip; `boot-test.ps1 -CrashTest` checks that a real page fault is reported.

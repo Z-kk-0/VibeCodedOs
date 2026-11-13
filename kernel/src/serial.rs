@@ -4,7 +4,7 @@
 //! forwards it to the host, so boots can be checked headless.
 //! Register layout: OSDev wiki "Serial Ports", PC16550D datasheet.
 
-use crate::port;
+use crate::arch::port;
 use core::fmt;
 
 /// COM1's base port is fixed by the PC platform.
@@ -34,11 +34,15 @@ pub struct Serial {
 }
 
 impl Serial {
-    /// Sets up COM1. Safe to call repeatedly (e.g. again from the panic handler).
+    /// Configures COM1. Call once at boot, before the first `com1()` write.
+    pub fn init_com1() {
+        Self::com1().init();
+    }
+
+    /// A handle to COM1. The UART has no state on our side, so handles are
+    /// free to create anywhere (e.g. in the panic handler).
     pub fn com1() -> Self {
-        let serial = Self { base: COM1 };
-        serial.init();
-        serial
+        Self { base: COM1 }
     }
 
     fn init(&self) {
