@@ -10,14 +10,14 @@ use core::ffi::c_void;
 /// (on x86_64 that is the Microsoft x64 convention).
 #[repr(C)]
 pub struct SimpleTextOutputProtocol {
-    pub reset: extern "efiapi" fn(this: *mut Self, extended_verification: bool) -> Status,
+    pub reset: unsafe extern "efiapi" fn(this: *mut Self, extended_verification: bool) -> Status,
     /// Prints a null-terminated UCS-2 string. Needs "\r\n" for a new line.
-    pub output_string: extern "efiapi" fn(this: *mut Self, string: *const u16) -> Status,
+    pub output_string: unsafe extern "efiapi" fn(this: *mut Self, string: *const u16) -> Status,
     test_string: *mut c_void,
     query_mode: *mut c_void,
     set_mode: *mut c_void,
     set_attribute: *mut c_void,
-    pub clear_screen: extern "efiapi" fn(this: *mut Self) -> Status,
+    pub clear_screen: unsafe extern "efiapi" fn(this: *mut Self) -> Status,
     set_cursor_position: *mut c_void,
     enable_cursor: *mut c_void,
     mode: *mut c_void,

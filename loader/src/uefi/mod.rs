@@ -4,9 +4,13 @@
 //! UEFI Specification 2.10. Layouts must match the spec byte for byte,
 //! hence `#[repr(C)]` everywhere.
 
+mod boot_services;
+mod memory;
 mod system_table;
 mod text_output;
 
+pub use boot_services::BootServices;
+pub use memory::{MemoryDescriptor, MemoryType};
 pub use system_table::SystemTable;
 pub use text_output::SimpleTextOutputProtocol;
 
@@ -20,10 +24,18 @@ pub type Handle = *mut core::ffi::c_void;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Status(pub usize);
 
+const ERROR_BIT: usize = 1 << (usize::BITS - 1);
+
 impl Status {
+    pub const BUFFER_TOO_SMALL: Status = Status(ERROR_BIT | 5);
+
     pub fn is_error(self) -> bool {
-        const ERROR_BIT: usize = 1 << (usize::BITS - 1);
         self.0 & ERROR_BIT != 0
+    }
+
+    /// Warnings (non-zero without the error bit) count as success.
+    pub fn into_result(self) -> Result<(), Status> {
+        if self.is_error() { Err(self) } else { Ok(()) }
     }
 }
 

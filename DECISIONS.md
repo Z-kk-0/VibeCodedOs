@@ -30,3 +30,21 @@ Short log of architecture decisions. Per entry: what, why, alternatives.
 **Decision:** Own UEFI loader in Rust (target `x86_64-unknown-uefi`), UEFI structs defined by hand – no `uefi` crate. Tested in QEMU with OVMF firmware.
 **Why:** Stays in one language; firmware already hands us 64-bit long mode with paging, so we skip real-mode legacy and focus on memory map, framebuffer and kernel handoff ourselves.
 **Alternatives:** Own legacy BIOS loader (lots of 16/32-bit assembly, obsolete firmware). Limine/GRUB via Multiboot2 (fast, but someone else does the learning part).
+
+## 004 – Kernel lives inside the loader
+**Decision:** The kernel ELF is embedded into `BOOTX64.EFI` at compile time (`include_bytes!`). One file boots the whole OS.
+**Why:** No UEFI file system protocols needed just to find our own kernel; loader and kernel can never be out of sync.
+**Alternatives:** Separate `kernel.elf` on the ESP, read via Simple File System protocol (more firmware code, more ways to fail).
+
+## 005 – Position-independent kernel
+**Decision:** Kernel is a static PIE (default of `x86_64-unknown-none`). The loader puts it wherever the firmware has free memory and applies the relocations itself.
+**Why:** No hard-coded load address that might collide with firmware memory. Relocation is ~50 lines and teaches how linkers/loaders really work.
+**Alternatives:** Fixed link address + linker script (simpler, but breaks if that memory is taken). Higher-half mapping – comes later with our own page tables.
+
+## 006 – Kernel knows nothing about UEFI
+**Decision:** Loader translates firmware data into our own `BootInfo` (crate `boot_info`, shared by both). Our allocations are tagged with OS-defined UEFI memory types (`0x8000_0000+`) so the map tells the kernel where it lives.
+**Why:** Clean boundary: firmware specifics stay in the loader; the kernel could be booted by something else later.
+
+## 007 – First kernel output: serial port
+**Decision:** COM1 (16550 UART), polled. Screen output (GOP framebuffer) comes later.
+**Why:** ~40 lines, works without any setup, and QEMU pipes it to the host – so boots can be tested headless (`tools/boot-test.ps1`).

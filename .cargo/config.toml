@@ -1,0 +1,4 @@
+# Where the loader finds the kernel ELF to embed (see DECISIONS.md, 004).
+# tools/build.ps1 overrides this for release builds.
+[env]
+VIBE_KERNEL_ELF = { value = "target/x86_64-unknown-none/debug/kernel", relative = true }
