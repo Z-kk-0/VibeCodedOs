@@ -1,10 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["boot_info", "elf", "frame_table", "kernel", "loader", "x86", "xtask"]
+members = ["boot_info", "elf", "frame_table", "kernel", "loader", "paging", "x86", "xtask"]
 # Plain `cargo test` / `cargo clippy` only touch the crates that build for
 # the host. Kernel and loader always need an explicit `--target`
 # (`cargo xtask` handles that).
-default-members = ["boot_info", "elf", "frame_table", "x86", "xtask"]
+default-members = ["boot_info", "elf", "frame_table", "paging", "x86", "xtask"]
 
 # There is no OS underneath us to unwind the stack on panic, so just abort.
 [profile.dev]

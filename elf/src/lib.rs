@@ -13,11 +13,40 @@ mod relocate;
 mod tests;
 
 pub use file::ElfFile;
-use file::{SEGMENT_LOAD, Segment};
+use file::{EXECUTABLE, SEGMENT_LOAD, Segment, WRITABLE};
 
 pub type Error = &'static str;
 
 pub const PAGE_SIZE: u64 = 4096;
+
+/// Where a loadable segment sits in the image and what it may do – what
+/// the page tables need to map it with the right permissions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentLayout {
+    /// Byte offset from the image start (= `load_span().start`).
+    pub offset: u64,
+    pub size: u64,
+    pub writable: bool,
+    pub executable: bool,
+}
+
+impl ElfFile<'_> {
+    pub fn segment_layouts(
+        &self,
+    ) -> Result<impl Iterator<Item = Result<SegmentLayout, Error>> + '_, Error> {
+        let image_start = self.load_span()?.start;
+        Ok(self.segments().filter_map(move |segment| match segment {
+            Ok(segment) if segment.kind != SEGMENT_LOAD => None,
+            Ok(segment) => Some(Ok(SegmentLayout {
+                offset: segment.virtual_address - image_start,
+                size: segment.memory_size,
+                writable: segment.permissions & WRITABLE != 0,
+                executable: segment.permissions & EXECUTABLE != 0,
+            })),
+            Err(error) => Some(Err(error)),
+        }))
+    }
+}
 
 /// Copies all loadable segments into `image` and applies the relocations
 /// for running at `image_address`. Returns the real entry point address.

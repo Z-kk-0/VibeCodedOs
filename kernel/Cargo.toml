@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 boot_info = { path = "../boot_info" }
 frame_table = { path = "../frame_table" }
+paging = { path = "../paging" }
 x86 = { path = "../x86" }

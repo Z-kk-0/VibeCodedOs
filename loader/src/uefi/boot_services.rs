@@ -67,6 +67,25 @@ impl BootServices {
         status.into_result().map(|()| address)
     }
 
+    /// Like `allocate_pages`, but zero-filled and as a byte slice. Rounds
+    /// up to whole pages. Never freed – the kernel reclaims it later.
+    pub fn allocate_zeroed(
+        &self,
+        memory_type: MemoryType,
+        bytes: usize,
+    ) -> Result<&'static mut [u8], Status> {
+        const PAGE_SIZE: usize = 4096;
+        let pages = bytes.div_ceil(PAGE_SIZE);
+        let address = self.allocate_pages(memory_type, pages)?;
+        // SAFETY: fresh, identity-mapped pages that only we own; zeroed before
+        // the slice is created so every byte is initialized.
+        unsafe {
+            let start = address as *mut u8;
+            core::ptr::write_bytes(start, 0, pages * PAGE_SIZE);
+            Ok(core::slice::from_raw_parts_mut(start, pages * PAGE_SIZE))
+        }
+    }
+
     /// How big the memory map is right now (it grows with every allocation).
     pub fn memory_map_size(&self) -> Result<MemoryMapInfo, Status> {
         match self.read_memory_map(&mut []) {

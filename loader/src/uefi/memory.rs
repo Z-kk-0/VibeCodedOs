@@ -18,6 +18,7 @@ impl MemoryType {
     /// We tag our own allocations with them, so they show up in the memory map.
     pub const HEMATITE_KERNEL: Self = Self(0x8000_0000);
     pub const HEMATITE_BOOT_INFO: Self = Self(0x8000_0001);
+    pub const HEMATITE_PAGE_TABLES: Self = Self(0x8000_0002);
 }
 
 /// Where `AllocatePages` may place an allocation.

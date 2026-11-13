@@ -42,16 +42,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         time::uptime_milliseconds()
     );
 
-    memory::print_map(boot_info);
-    let frames = memory::init(boot_info);
-    println!(
-        "Frame table: {} frames tracked, {} KiB table at {:#x}, {} MiB free.",
-        frames.frames_tracked,
-        frames.table_bytes / 1024,
-        frames.table_address,
-        memory::free_frame_count() * 4 / 1024
-    );
-    memory::self_check();
+    memory::start(boot_info);
 
     println!("Hematite kernel ready.");
 
@@ -75,11 +66,12 @@ fn idle() -> ! {
     }
 }
 
-/// Built in only by `cargo xtask boot-test --crash`: touches memory the
-/// firmware never mapped (the upper half), to check that faults get reported.
+/// Built in only by `cargo xtask boot-test --crash`: touches the lower half,
+/// which is empty since the identity map is gone, to check that faults get
+/// reported.
 fn crash_test() {
     println!("Crash test: reading unmapped memory...");
-    let unmapped = 0xFFFF_8000_0000_0000 as *const u64;
+    let unmapped = 0x1000 as *const u64;
     // SAFETY: not safe at all – that's the point. It must page-fault.
     let _ = unsafe { unmapped.read_volatile() };
 }

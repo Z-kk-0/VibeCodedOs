@@ -104,3 +104,17 @@ fn frame_numbers_and_addresses_convert() {
     assert_eq!(FrameNumber(3).start_address(), 0x3000);
     assert_eq!(FrameTable::bytes_needed(512), 4096);
 }
+
+#[test]
+fn reclaimed_frames_join_the_free_list() {
+    let mut entries = [UNSET; 16];
+    let mut table = table(&mut entries);
+    let taken = table.allocate().unwrap(); // frame 2
+
+    // 0..8 contains unavailable frames (0, 1, 6, 7), free ones and `taken`.
+    assert_eq!(table.add_free(0..8), 4);
+
+    assert_eq!(table.free_count(), 5 + 4);
+    assert_eq!(table.state(taken), FrameState::Allocated);
+    assert_eq!(table.state(FrameNumber(7)), FrameState::Free);
+}

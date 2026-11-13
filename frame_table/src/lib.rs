@@ -113,6 +113,25 @@ impl<'a> FrameTable<'a> {
         }
     }
 
+    /// Hands frames that were `Unavailable` to the allocator while it's
+    /// running – for memory that becomes free later (reclaiming). Frames in
+    /// any other state are left alone. Returns how many became free.
+    pub fn add_free(&mut self, frames: Range<u64>) -> usize {
+        let end = frames.end.min(self.entries.len() as u64);
+        let mut added = 0;
+        for frame in frames.start..end {
+            let entry = &mut self.entries[frame as usize];
+            if entry.state == FrameState::Unavailable {
+                entry.state = FrameState::Free;
+                entry.next_free = self.first_free;
+                self.first_free = frame as u32;
+                added += 1;
+            }
+        }
+        self.free_count += added;
+        added
+    }
+
     pub fn allocate(&mut self) -> Option<FrameNumber> {
         if self.first_free == END_OF_LIST {
             return None;

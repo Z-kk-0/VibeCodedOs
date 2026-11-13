@@ -68,6 +68,25 @@ pub fn init(boot_info: &BootInfo) -> FrameSetup {
     }
 }
 
+/// Hands the memory the firmware and the loader used to the allocator.
+/// Only safe once nothing uses it anymore: we run on the loader's page
+/// tables (not the firmware's) and on our own stack. Returns bytes gained.
+pub fn reclaim_boot_memory(boot_info: &BootInfo) -> u64 {
+    let mut guard = FRAMES.lock();
+    let table = guard.as_mut().expect("frame table not initialized");
+    let reclaimable = [
+        MemoryKind::FirmwareReclaimable,
+        MemoryKind::LoaderReclaimable,
+    ];
+    let frames: usize = boot_info
+        .memory_regions()
+        .iter()
+        .filter(|region| reclaimable.contains(&region.kind))
+        .map(|region| table.add_free(frame_range(region.start, region.end())))
+        .sum();
+    frames as u64 * FRAME_SIZE
+}
+
 pub fn allocate_frame() -> Option<FrameNumber> {
     FRAMES
         .lock()

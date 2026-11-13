@@ -2,20 +2,23 @@
 //! The ELF work itself happens in the `elf` crate; this module only gets
 //! memory from the firmware and, at the end, jumps.
 
+use crate::address_space::AddressSpace;
 use crate::uefi::{BootServices, MemoryType};
-use boot_info::{BootInfo, PAGE_SIZE};
+use boot_info::{KERNEL_BASE, PAGE_SIZE};
 use elf::ElfFile;
 
 pub type Error = &'static str;
 
-/// A kernel copied into memory and relocated – ready to jump to.
+/// A kernel copied into physical memory, relocated to run at `KERNEL_BASE`.
 pub struct LoadedKernel {
+    pub elf: ElfFile<'static>,
     pub physical_start: u64,
     pub size: u64,
+    /// Virtual address of `_start`.
     pub entry: u64,
 }
 
-pub fn load(boot_services: &BootServices, file: &[u8]) -> Result<LoadedKernel, Error> {
+pub fn load(boot_services: &BootServices, file: &'static [u8]) -> Result<LoadedKernel, Error> {
     let elf = ElfFile::parse(file)?;
     let span = elf.load_span()?;
     let size = span.end - span.start;
@@ -32,8 +35,10 @@ pub fn load(boot_services: &BootServices, file: &[u8]) -> Result<LoadedKernel, E
         core::slice::from_raw_parts_mut(start, size as usize)
     };
 
-    let entry = elf::load(&elf, image, physical_start)?;
+    // Copied to `physical_start`, but relocated for where it will be mapped.
+    let entry = elf::load(&elf, image, KERNEL_BASE)?;
     Ok(LoadedKernel {
+        elf,
         physical_start,
         size,
         entry,
@@ -41,12 +46,20 @@ pub fn load(boot_services: &BootServices, file: &[u8]) -> Result<LoadedKernel, E
 }
 
 impl LoadedKernel {
-    /// Jumps into the kernel. Contract with `kernel/src/arch/start.rs`:
-    /// System V calling convention, first argument = `&BootInfo`, never returns.
-    pub fn start(&self, boot_info: &'static BootInfo) -> ! {
-        type Entry = extern "sysv64" fn(&'static BootInfo) -> !;
-        // SAFETY: `entry` points to the relocated `_start`, which follows `Entry`.
-        let entry: Entry = unsafe { core::mem::transmute(self.entry as usize) };
-        entry(boot_info)
+    /// Switches to the kernel's address space and jumps in. Contract with
+    /// `kernel/src/arch/start.rs`: System V calling convention, first
+    /// argument = `BootInfo` address (in the physical memory window).
+    ///
+    /// # Safety
+    /// Only after `ExitBootServices`; `address_space` must map this kernel.
+    pub unsafe fn start(&self, address_space: &AddressSpace, boot_info: u64) -> ! {
+        type Entry = extern "sysv64" fn(u64) -> !;
+        // SAFETY: forwarded to the caller. `entry` is the relocated `_start`,
+        // mapped by `address_space`, and follows `Entry`.
+        unsafe {
+            address_space.activate();
+            let entry: Entry = core::mem::transmute(self.entry as usize);
+            entry(boot_info)
+        }
     }
 }

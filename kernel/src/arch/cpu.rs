@@ -52,6 +52,32 @@ pub fn page_fault_address() -> u64 {
     address
 }
 
+/// Physical address of the active top-level page table (from CR3).
+pub fn page_table_root() -> u64 {
+    const ADDRESS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+    let cr3: u64;
+    // SAFETY: reading CR3 has no side effects.
+    unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
+    cr3 & ADDRESS_MASK
+}
+
+/// Makes the CPU forget cached translations (the TLB) by reloading CR3.
+/// Needed after removing or changing mappings.
+pub fn flush_translation_cache() {
+    // SAFETY: writes back the value CR3 already has.
+    unsafe {
+        asm!("mov {0}, cr3", "mov cr3, {0}", out(reg) _, options(nostack, preserves_flags));
+    }
+}
+
+/// Whether the no-execute bit in page tables is active (EFER.NXE).
+pub fn no_execute_enabled() -> bool {
+    const EFER: u32 = 0xC000_0080;
+    const NO_EXECUTE_ENABLE: u64 = 1 << 11;
+    // SAFETY: EFER exists on every x86_64 CPU.
+    unsafe { read_msr(EFER) & NO_EXECUTE_ENABLE != 0 }
+}
+
 /// Reads a model-specific register.
 ///
 /// # Safety

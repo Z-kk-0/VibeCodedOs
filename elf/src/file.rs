@@ -16,9 +16,14 @@ const MACHINE_X86_64: u16 = 62;
 pub const SEGMENT_LOAD: u32 = 1;
 pub const SEGMENT_DYNAMIC: u32 = 2;
 
+// Segment permission bits ("p_flags").
+pub const EXECUTABLE: u32 = 1 << 0;
+pub const WRITABLE: u32 = 1 << 1;
+
 /// One program header: a piece of the file and where it goes in memory.
 pub struct Segment {
     pub kind: u32,
+    pub permissions: u32,
     pub file_offset: u64,
     pub file_size: u64,
     pub virtual_address: u64,
@@ -95,6 +100,7 @@ impl<'a> ElfFile<'a> {
             .ok_or("ELF program header table is out of range")?;
         Ok(Segment {
             kind: read_u32(self.bytes, at)?,
+            permissions: read_u32(self.bytes, at + 0x04)?,
             file_offset: read_u64(self.bytes, at + 0x08)?,
             virtual_address: read_u64(self.bytes, at + 0x10)?,
             file_size: read_u64(self.bytes, at + 0x20)?,

@@ -3,6 +3,19 @@
 //! The loader fills a `BootInfo` and passes a pointer to it to the kernel's
 //! entry point. Nothing in here is UEFI-specific: the loader translates
 //! firmware data into these plain types first.
+//!
+//! ## Address space the kernel starts in (DECISIONS.md, 015)
+//!
+//! ```text
+//! 0xFFFF_FFFF_8000_0000  KERNEL_BASE   kernel image, W^X per ELF segment
+//! 0xFFFF_8000_0000_0000  PHYSICAL_MEMORY_WINDOW + p = physical address p
+//!                        (all RAM, and at least the first 4 GiB incl. devices)
+//! 0x0000_0000_0000_0000  identity map, same size as the window – only so the
+//!                        loader survives switching page tables. The kernel
+//!                        removes it right away; the lower half then belongs
+//!                        to user programs.
+//! ```
+//! All pointers in `BootInfo` point into the physical memory window.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -11,6 +24,11 @@ mod region_list;
 pub use region_list::{RegionList, RegionListFull};
 
 pub const PAGE_SIZE: u64 = 4096;
+
+/// Where the kernel image is mapped: the top 2 GiB of the address space.
+pub const KERNEL_BASE: u64 = 0xFFFF_FFFF_8000_0000;
+/// Start of the upper half; physical memory is mapped here 1:1.
+pub const PHYSICAL_MEMORY_WINDOW: u64 = 0xFFFF_8000_0000_0000;
 
 /// "HEMATITE" – exactly 8 bytes, as a number; lets the kernel detect a garbage pointer.
 pub const MAGIC: u64 = u64::from_le_bytes(*b"HEMATITE");
@@ -75,9 +93,10 @@ pub enum MemoryKind {
     /// Loader code and data. Free once we are sure nothing points into it.
     LoaderReclaimable,
     /// What the firmware used while booting ("boot services" memory). Free
-    /// in principle – but it still holds the page tables the CPU is using,
-    /// so only reclaim it after switching to our own.
+    /// once the kernel runs on the loader's page tables.
     FirmwareReclaimable,
+    /// The page tables the loader built. In use – never free.
+    PageTables,
     /// ACPI tables. Free after the kernel has read them.
     AcpiReclaimable,
     /// Firmware needs this even after boot. Never touch.
@@ -87,12 +106,13 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 8] = [
+    pub const ALL: [MemoryKind; 9] = [
         MemoryKind::Usable,
         MemoryKind::Kernel,
         MemoryKind::BootInfo,
         MemoryKind::LoaderReclaimable,
         MemoryKind::FirmwareReclaimable,
+        MemoryKind::PageTables,
         MemoryKind::AcpiReclaimable,
         MemoryKind::AcpiNvs,
         MemoryKind::Reserved,
@@ -111,6 +131,7 @@ impl MemoryKind {
             MemoryKind::BootInfo => "boot info",
             MemoryKind::LoaderReclaimable => "loader (reclaimable)",
             MemoryKind::FirmwareReclaimable => "firmware (reclaimable)",
+            MemoryKind::PageTables => "page tables",
             MemoryKind::AcpiReclaimable => "ACPI (reclaimable)",
             MemoryKind::AcpiNvs => "ACPI NVS",
             MemoryKind::Reserved => "reserved",

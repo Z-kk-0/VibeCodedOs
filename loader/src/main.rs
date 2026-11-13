@@ -1,13 +1,15 @@
 //! UEFI boot loader. The firmware loads this file from
 //! `\EFI\BOOT\BOOTX64.EFI` and calls `efi_main`.
 //!
-//! Job: load the embedded kernel, leave the firmware, jump into the kernel.
+//! Job: load the embedded kernel, build its page tables, leave the firmware,
+//! jump into the kernel.
 
 // No standard library (it needs an OS) and no normal `main`
 // (the firmware calls `efi_main` directly).
 #![no_std]
 #![no_main]
 
+mod address_space;
 mod console;
 mod handoff;
 mod kernel_image;
@@ -38,20 +40,31 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
     // Ignoring print results: if printing fails there is nowhere to report it.
     let _ = writeln!(console, "Hematite loader");
 
-    let kernel = match kernel_image::load(boot_services, KERNEL_ELF) {
-        Ok(kernel) => kernel,
-        Err(message) => fail(&mut console, message),
-    };
+    let kernel = kernel_image::load(boot_services, KERNEL_ELF)
+        .unwrap_or_else(|message| fail(&mut console, message));
     let _ = writeln!(
         console,
-        "Kernel loaded at {:#x} ({} KiB), entry {:#x}. Leaving the firmware...",
-        kernel.physical_start,
+        "Kernel: {} KiB at physical {:#x}, will run at {:#x}.",
         kernel.size / 1024,
+        kernel.physical_start,
         kernel.entry
     );
 
-    match handoff::exit_boot_services(boot_services, image, console) {
-        Ok(boot_info) => kernel.start(boot_info),
+    let handoff =
+        handoff::prepare(boot_services).unwrap_or_else(|message| fail(&mut console, message));
+    let address_space = address_space::build(boot_services, &kernel, handoff.physical_memory_end)
+        .unwrap_or_else(|message| fail(&mut console, message));
+    let _ = writeln!(
+        console,
+        "Page tables: {} tables, physical memory window {} GiB. Leaving the firmware...",
+        address_space.tables_used,
+        address_space.window_size >> 30
+    );
+
+    match handoff.finish(boot_services, image, console) {
+        // SAFETY: boot services are gone, and the address space maps the
+        // kernel plus everything the loader still runs on.
+        Ok(boot_info) => unsafe { kernel.start(&address_space, boot_info) },
         // The console is gone at this point; nothing left to tell anyone.
         Err(_) => halt_forever(),
     }

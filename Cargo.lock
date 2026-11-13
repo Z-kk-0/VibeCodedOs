@@ -20,6 +20,7 @@ version = "0.1.0"
 dependencies = [
  "boot_info",
  "frame_table",
+ "paging",
  "x86",
 ]
 
@@ -29,7 +30,12 @@ version = "0.1.0"
 dependencies = [
  "boot_info",
  "elf",
+ "paging",
 ]
+
+[[package]]
+name = "paging"
+version = "0.1.0"
 
 [[package]]
 name = "x86"

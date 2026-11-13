@@ -47,6 +47,7 @@ fn build_elf(elf_type: u16, relocation_kind: u64) -> Vec<u8> {
     put_u16(&mut bytes, 0x38, 2); // program header count
 
     put_program_header(&mut bytes, 0x40, 1, 0x000, 0x200, 0x300);
+    put_u32(&mut bytes, 0x44, 0b110); // LOAD permissions: readable + writable
     put_program_header(&mut bytes, 0x78, 2, 0x140, 0x40, 0x40);
 
     let dynamic = [(7, 0x180), (8, 24), (9, 24), (0, 0)];
@@ -148,4 +149,20 @@ fn rejects_too_small_image_memory() {
     let elf = ElfFile::parse(&file).unwrap();
     let mut image = vec![0u8; 0x100];
     assert!(load(&elf, &mut image, 0).is_err());
+}
+
+#[test]
+fn segment_layouts_report_offsets_and_permissions() {
+    let file = build_elf(POSITION_INDEPENDENT, RELATIVE);
+    let elf = ElfFile::parse(&file).unwrap();
+    let layouts: Vec<_> = elf.segment_layouts().unwrap().map(Result::unwrap).collect();
+    assert_eq!(
+        layouts,
+        [super::SegmentLayout {
+            offset: 0,
+            size: 0x300,
+            writable: true,
+            executable: false
+        }]
+    );
 }

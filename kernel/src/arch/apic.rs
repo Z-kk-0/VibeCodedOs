@@ -68,8 +68,9 @@ pub fn end_of_interrupt() {
 }
 
 fn write(register: usize, value: u32) {
-    // SAFETY: `BASE` points at the APIC's register window (identity-mapped
-    // by the firmware); `register` is one of the documented offsets.
+    // SAFETY: `BASE` is the APIC's physical register window, which the
+    // physical memory window covers (it's below 4 GiB); `register` is one
+    // of the documented offsets. The firmware's MTRRs make it uncached.
     unsafe { register_pointer(register).write_volatile(value) }
 }
 
@@ -79,5 +80,6 @@ fn read(register: usize) -> u32 {
 }
 
 fn register_pointer(register: usize) -> *mut u32 {
-    (BASE.load(Ordering::Relaxed) as usize + register) as *mut u32
+    let physical = BASE.load(Ordering::Relaxed) + register as u64;
+    crate::memory::physical_to_pointer(physical).cast()
 }
