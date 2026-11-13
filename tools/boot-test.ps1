@@ -1,7 +1,7 @@
 # Boots headless and checks the serial log for an expected line.
 # Exit code 0 = found. Prints the serial log either way.
 #
-#   boot-test.ps1             normal boot must reach "VibeCodedOs kernel ready."
+#   boot-test.ps1             normal boot must reach "Hematite kernel ready."
 #   boot-test.ps1 -CrashTest  kernel deliberately page-faults; the exception
 #                             report must show up (checks our fault handling)
 
@@ -9,11 +9,11 @@ param([int]$TimeoutSeconds = 20, [switch]$Release, [switch]$CrashTest)
 
 . "$PSScriptRoot\common.ps1"
 
-$expected = if ($CrashTest) { 'EXCEPTION: Page Fault' } else { 'VibeCodedOs kernel ready.' }
+$expected = if ($CrashTest) { 'EXCEPTION: Page Fault' } else { 'Hematite kernel ready.' }
 $log = Join-Path $BuildDir 'serial.log'
 
 # The kernel checks this variable at compile time (option_env!).
-if ($CrashTest) { $env:VIBE_CRASH_TEST = '1' } else { Remove-Item Env:VIBE_CRASH_TEST -ErrorAction SilentlyContinue }
+if ($CrashTest) { $env:HEMATITE_CRASH_TEST = '1' } else { Remove-Item Env:HEMATITE_CRASH_TEST -ErrorAction SilentlyContinue }
 Invoke-Build -Release:$Release
 Remove-Item $log -ErrorAction SilentlyContinue
 

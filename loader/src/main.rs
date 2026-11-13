@@ -18,7 +18,7 @@ use core::fmt::Write;
 use uefi::{Handle, Status, SystemTable};
 
 /// The kernel, baked into this binary at compile time (DECISIONS.md, 004).
-static KERNEL_ELF: &[u8] = include_bytes!(env!("VIBE_KERNEL_ELF"));
+static KERNEL_ELF: &[u8] = include_bytes!(env!("HEMATITE_KERNEL_ELF"));
 
 /// Entry point. The firmware passes our own image handle and the system table.
 /// The name `efi_main` is what the Rust UEFI target expects as entry symbol.
@@ -36,7 +36,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
 
     console.clear();
     // Ignoring print results: if printing fails there is nowhere to report it.
-    let _ = writeln!(console, "VibeCodedOs loader");
+    let _ = writeln!(console, "Hematite loader");
 
     let kernel = match kernel_image::load(boot_services, KERNEL_ELF) {
         Ok(kernel) => kernel,

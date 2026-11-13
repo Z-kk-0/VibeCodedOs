@@ -21,7 +21,7 @@ pub fn load(boot_services: &BootServices, file: &[u8]) -> Result<LoadedKernel, E
     let size = span.end - span.start;
 
     let physical_start = boot_services
-        .allocate_pages(MemoryType::VIBE_KERNEL, (size / PAGE_SIZE) as usize)
+        .allocate_pages(MemoryType::HEMATITE_KERNEL, (size / PAGE_SIZE) as usize)
         .map_err(|_| "not enough memory for the kernel")?;
     // SAFETY: the firmware just gave us these pages and nobody else uses
     // them. UEFI identity-maps memory, so the address is a valid pointer.

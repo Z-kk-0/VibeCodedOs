@@ -16,8 +16,8 @@ impl MemoryType {
 
     /// Values from 0x8000_0000 up are free for OS loaders to define (§7.2.1).
     /// We tag our own allocations with them, so they show up in the memory map.
-    pub const VIBE_KERNEL: Self = Self(0x8000_0000);
-    pub const VIBE_BOOT_INFO: Self = Self(0x8000_0001);
+    pub const HEMATITE_KERNEL: Self = Self(0x8000_0000);
+    pub const HEMATITE_BOOT_INFO: Self = Self(0x8000_0001);
 }
 
 /// Where `AllocatePages` may place an allocation.

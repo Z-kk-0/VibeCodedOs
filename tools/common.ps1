@@ -19,7 +19,7 @@ function Invoke-Build([switch]$Release) {
     cargo build -p kernel --target x86_64-unknown-none $releaseFlag
     if ($LASTEXITCODE -ne 0) { throw 'kernel build failed' }
 
-    $env:VIBE_KERNEL_ELF = Join-Path $Root "target\x86_64-unknown-none\$profileDir\kernel"
+    $env:HEMATITE_KERNEL_ELF = Join-Path $Root "target\x86_64-unknown-none\$profileDir\kernel"
     cargo build -p loader --target x86_64-unknown-uefi $releaseFlag
     if ($LASTEXITCODE -ne 0) { throw 'loader build failed' }
 

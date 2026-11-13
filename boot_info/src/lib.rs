@@ -12,8 +12,8 @@ pub use region_list::{RegionList, RegionListFull};
 
 pub const PAGE_SIZE: u64 = 4096;
 
-/// "VIBEBOOT" as a number; lets the kernel detect a garbage pointer.
-pub const MAGIC: u64 = u64::from_le_bytes(*b"VIBEBOOT");
+/// "HEMATITE" – exactly 8 bytes, as a number; lets the kernel detect a garbage pointer.
+pub const MAGIC: u64 = u64::from_le_bytes(*b"HEMATITE");
 
 #[repr(C)]
 pub struct BootInfo {

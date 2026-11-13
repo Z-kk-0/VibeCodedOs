@@ -41,7 +41,7 @@ pub fn exit_boot_services(
     )?;
     let boot_area = allocate(
         boot_services,
-        MemoryType::VIBE_BOOT_INFO,
+        MemoryType::HEMATITE_BOOT_INFO,
         size_of::<BootInfo>() + capacity * size_of::<MemoryRegion>(),
     )?;
 
@@ -117,7 +117,7 @@ fn write_boot_info(
 
     let info = info_bytes.as_mut_ptr().cast::<BootInfo>();
     // SAFETY: `info` is page-aligned and big enough; the regions live in
-    // memory tagged VIBE_BOOT_INFO, which nobody overwrites.
+    // memory tagged HEMATITE_BOOT_INFO, which nobody overwrites.
     unsafe {
         info.write(BootInfo::new(regions.as_ptr(), regions.len()));
         &*info
@@ -131,8 +131,8 @@ fn kind_of(memory_type: MemoryType) -> MemoryKind {
         | MemoryType::BOOT_SERVICES_CODE
         | MemoryType::BOOT_SERVICES_DATA => MemoryKind::Usable,
         MemoryType::LOADER_CODE | MemoryType::LOADER_DATA => MemoryKind::LoaderReclaimable,
-        MemoryType::VIBE_KERNEL => MemoryKind::Kernel,
-        MemoryType::VIBE_BOOT_INFO => MemoryKind::BootInfo,
+        MemoryType::HEMATITE_KERNEL => MemoryKind::Kernel,
+        MemoryType::HEMATITE_BOOT_INFO => MemoryKind::BootInfo,
         MemoryType::ACPI_RECLAIM => MemoryKind::AcpiReclaimable,
         MemoryType::ACPI_NVS => MemoryKind::AcpiNvs,
         _ => MemoryKind::Reserved,

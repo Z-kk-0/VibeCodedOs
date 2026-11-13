@@ -1,4 +1,4 @@
-# Decisions
+# Hematite – Decisions
 
 Short log of architecture decisions. Per entry: what, why, alternatives.
 
@@ -59,3 +59,8 @@ Short log of architecture decisions. Per entry: what, why, alternatives.
 **Decision:** Everything that is just "bytes in, bytes out" lives in small `no_std` library crates (`elf`, `x86`, `boot_info`) that also build for the host, so `cargo test` runs their unit tests in milliseconds. Code that needs the real CPU stays in `kernel`/`loader` and is checked by booting in QEMU. `tools/test.ps1` runs all of it.
 **Why:** `no_std` only restricts our code, not the test harness. Splitting out pure logic also enforces "hardware at the edges": the `x86` crate *describes* the CPU's formats, `kernel/src/arch` *uses* them.
 **Alternatives:** `custom_test_frameworks` to run tests inside the kernel (nightly-only Rust). Making kernel/loader themselves host-testable (lots of `cfg(test)` noise around asm and entry points).
+
+## 010 – Name: Hematite
+**Decision:** The OS is called **Hematite** (the repo keeps its name, VibeCodedOs).
+**Why:** Hematite is Fe₂O₃ – iron oxide, the mineral that rust is made of. So it's literally "Rust, crystallized": an OS built from Rust, layer by layer. Iron oxide also stored the bits of early computers (ferrite core memory). And `b"HEMATITE"` is exactly 8 bytes – it fits the boot magic number perfectly.
+**Alternatives:** Ferrite (an obvious, common pick for Rust projects), Lodestone, Magnetite.

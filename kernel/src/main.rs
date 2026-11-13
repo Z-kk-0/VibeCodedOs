@@ -1,4 +1,4 @@
-//! The VibeCodedOs kernel. Entered from the loader via `_start` (arch/start.rs).
+//! The Hematite kernel. Entered from the loader via `_start` (arch/start.rs).
 
 #![no_std]
 #![no_main]
@@ -21,16 +21,16 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         boot_info::MAGIC,
         "BootInfo pointer is garbage"
     );
-    println!("\nVibeCodedOs kernel: the firmware is gone, the machine is ours.");
+    println!("\nHematite kernel: the firmware is gone, the machine is ours.");
 
     arch::init();
     println!("Own GDT and IDT loaded.");
     cpu::breakpoint(); // proves an exception can go through our handlers and come back
 
     print_memory_summary(boot_info);
-    println!("VibeCodedOs kernel ready.");
+    println!("Hematite kernel ready.");
 
-    if option_env!("VIBE_CRASH_TEST").is_some() {
+    if option_env!("HEMATITE_CRASH_TEST").is_some() {
         crash_test();
     }
     cpu::halt_forever()
