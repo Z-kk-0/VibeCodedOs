@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["loader"]
+
+# There is no OS underneath us to unwind the stack on panic, so just abort.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
