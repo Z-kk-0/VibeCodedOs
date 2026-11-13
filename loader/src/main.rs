@@ -9,8 +9,8 @@
 #![no_main]
 
 mod console;
-mod elf;
 mod handoff;
+mod kernel_image;
 mod uefi;
 
 use console::Console;
@@ -38,7 +38,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
     // Ignoring print results: if printing fails there is nowhere to report it.
     let _ = writeln!(console, "VibeCodedOs loader");
 
-    let kernel = match elf::load(boot_services, KERNEL_ELF) {
+    let kernel = match kernel_image::load(boot_services, KERNEL_ELF) {
         Ok(kernel) => kernel,
         Err(message) => fail(&mut console, message),
     };

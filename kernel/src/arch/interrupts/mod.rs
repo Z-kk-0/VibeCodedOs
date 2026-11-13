@@ -3,7 +3,7 @@
 mod exceptions;
 mod stubs;
 
-pub use exceptions::DOUBLE_FAULT;
+use x86::exceptions::FIRST_NON_EXCEPTION;
 
 const STUB_SIZE: u64 = 16;
 
@@ -12,8 +12,8 @@ unsafe extern "C" {
     static interrupt_stubs: u8;
 }
 
-pub fn stub_address(vector: usize) -> u64 {
-    (&raw const interrupt_stubs) as u64 + vector as u64 * STUB_SIZE
+pub fn stub_address(vector: u64) -> u64 {
+    (&raw const interrupt_stubs) as u64 + vector * STUB_SIZE
 }
 
 /// Everything the CPU and our stub saved, lowest address first.
@@ -45,9 +45,6 @@ pub struct InterruptFrame {
     pub rsp: u64,
     pub ss: u64,
 }
-
-/// Vectors 0–31 are CPU exceptions; 32–255 are free for devices and software.
-const FIRST_NON_EXCEPTION: u64 = 32;
 
 extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) {
     if frame.vector < FIRST_NON_EXCEPTION {

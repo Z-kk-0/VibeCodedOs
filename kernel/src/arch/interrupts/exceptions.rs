@@ -1,48 +1,11 @@
-//! CPU exceptions (vectors 0–31): the CPU telling us an instruction went wrong.
-//! For now, only a breakpoint is survivable; everything else is reported and
-//! stops the machine. Names: Intel SDM Vol. 3A, Table 6-1.
+//! CPU exceptions (vectors 0–31): the CPU telling us an instruction went
+//! wrong. For now, only a breakpoint is survivable; everything else is
+//! reported and stops the machine. Names and error-code meanings come from
+//! the `x86` crate.
 
 use super::InterruptFrame;
 use crate::arch::cpu;
-
-const BREAKPOINT: u64 = 3;
-pub const DOUBLE_FAULT: usize = 8;
-const PAGE_FAULT: u64 = 14;
-
-const NAMES: [&str; 32] = [
-    "Divide Error",
-    "Debug",
-    "Non-Maskable Interrupt",
-    "Breakpoint",
-    "Overflow",
-    "Bound Range Exceeded",
-    "Invalid Opcode",
-    "Device Not Available",
-    "Double Fault",
-    "Coprocessor Segment Overrun",
-    "Invalid TSS",
-    "Segment Not Present",
-    "Stack-Segment Fault",
-    "General Protection Fault",
-    "Page Fault",
-    "Reserved",
-    "x87 Floating-Point Error",
-    "Alignment Check",
-    "Machine Check",
-    "SIMD Floating-Point Exception",
-    "Virtualization Exception",
-    "Control Protection Exception",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Hypervisor Injection Exception",
-    "VMM Communication Exception",
-    "Security Exception",
-    "Reserved",
-];
+use x86::exceptions::{BREAKPOINT, PAGE_FAULT, describe_page_fault, name};
 
 pub fn handle(frame: &mut InterruptFrame) {
     if frame.vector == BREAKPOINT {
@@ -58,7 +21,9 @@ fn report(frame: &InterruptFrame) {
     println!();
     println!(
         "EXCEPTION: {} (#{}), error code {:#x}",
-        NAMES[frame.vector as usize], frame.vector, frame.error_code
+        name(frame.vector),
+        frame.vector,
+        frame.error_code
     );
     if frame.vector == PAGE_FAULT {
         println!(
@@ -95,24 +60,5 @@ fn report(frame: &InterruptFrame) {
             print!(" {name} {value:#018x}");
         }
         println!();
-    }
-}
-
-/// Page fault error code bits, Intel SDM Vol. 3A, Figure 6-11.
-fn describe_page_fault(error_code: u64) -> &'static str {
-    const PAGE_PRESENT: u64 = 1 << 0;
-    const WRITE: u64 = 1 << 1;
-    const INSTRUCTION_FETCH: u64 = 1 << 4;
-
-    match (
-        error_code & PAGE_PRESENT != 0,
-        error_code & WRITE != 0,
-        error_code & INSTRUCTION_FETCH != 0,
-    ) {
-        (_, _, true) => "Instruction fetch",
-        (false, false, _) => "Read from an unmapped page",
-        (false, true, _) => "Write to an unmapped page",
-        (true, false, _) => "Read violating page permissions",
-        (true, true, _) => "Write violating page permissions",
     }
 }

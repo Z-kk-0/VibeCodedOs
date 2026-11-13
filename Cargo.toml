@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["boot_info", "kernel", "loader"]
+members = ["boot_info", "elf", "kernel", "loader", "x86"]
+# Plain `cargo test` / `cargo clippy` only touch the pure-logic crates, which
+# also build for the host. Kernel and loader always need an explicit
+# `--target` (see tools/).
+default-members = ["boot_info", "elf", "x86"]
 
 # There is no OS underneath us to unwind the stack on panic, so just abort.
 [profile.dev]

@@ -8,7 +8,7 @@
 
 use crate::console::Console;
 use crate::uefi::{BootServices, Handle, MemoryDescriptor, MemoryType};
-use boot_info::{BootInfo, MemoryKind, MemoryRegion, PAGE_SIZE};
+use boot_info::{BootInfo, MemoryKind, MemoryRegion, PAGE_SIZE, RegionList};
 use core::mem::size_of;
 
 pub type Error = &'static str;
@@ -103,41 +103,25 @@ fn write_boot_info(
     let regions = unsafe {
         core::slice::from_raw_parts_mut(region_bytes.as_mut_ptr().cast::<MemoryRegion>(), capacity)
     };
-    let count = fill_regions(regions, descriptors);
+    let mut list = RegionList::new(regions);
+    for descriptor in descriptors {
+        // Can't fail: `capacity` covers the whole map. And with the firmware
+        // gone there would be no way to report it anyway.
+        let _ = list.push(MemoryRegion {
+            start: descriptor.physical_start,
+            page_count: descriptor.number_of_pages,
+            kind: kind_of(descriptor.memory_type),
+        });
+    }
+    let regions = list.as_slice();
 
     let info = info_bytes.as_mut_ptr().cast::<BootInfo>();
     // SAFETY: `info` is page-aligned and big enough; the regions live in
     // memory tagged VIBE_BOOT_INFO, which nobody overwrites.
     unsafe {
-        info.write(BootInfo::new(regions.as_ptr(), count));
+        info.write(BootInfo::new(regions.as_ptr(), regions.len()));
         &*info
     }
-}
-
-/// Translates descriptors into regions, merging a region into its
-/// predecessor when they touch and have the same kind. Returns the count.
-fn fill_regions(
-    regions: &mut [MemoryRegion],
-    descriptors: impl Iterator<Item = MemoryDescriptor>,
-) -> usize {
-    let mut count: usize = 0;
-    for descriptor in descriptors {
-        let region = MemoryRegion {
-            start: descriptor.physical_start,
-            page_count: descriptor.number_of_pages,
-            kind: kind_of(descriptor.memory_type),
-        };
-        if let Some(previous) = count.checked_sub(1).map(|last| &mut regions[last])
-            && previous.kind == region.kind
-            && previous.end() == region.start
-        {
-            previous.page_count += region.page_count;
-        } else if count < regions.len() {
-            regions[count] = region;
-            count += 1;
-        }
-    }
-    count
 }
 
 fn kind_of(memory_type: MemoryType) -> MemoryKind {

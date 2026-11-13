@@ -1,8 +1,9 @@
 //! Parsing the ELF header and program headers ("segments").
 //! Offsets from "ELF-64 Object File Format" v1.5, §3 and §6.
 
-use super::Error;
 use super::bytes::{read_u16, read_u32, read_u64};
+use super::{Error, PAGE_SIZE};
+use core::ops::Range;
 
 const HEADER_SIZE: usize = 64;
 const MAGIC: &[u8] = b"\x7fELF";
@@ -27,6 +28,7 @@ pub struct Segment {
 
 pub struct ElfFile<'a> {
     pub bytes: &'a [u8],
+    /// Entry point, as linked (before moving the image).
     pub entry: u64,
     segment_table: usize,
     segment_entry_size: usize,
@@ -36,16 +38,16 @@ pub struct ElfFile<'a> {
 impl<'a> ElfFile<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < HEADER_SIZE || &bytes[0..4] != MAGIC {
-            return Err("kernel is not an ELF file");
+            return Err("not an ELF file");
         }
         if bytes[4] != CLASS_64_BIT || bytes[5] != LITTLE_ENDIAN {
-            return Err("kernel ELF is not 64-bit little endian");
+            return Err("ELF is not 64-bit little endian");
         }
         if read_u16(bytes, 0x12)? != MACHINE_X86_64 {
-            return Err("kernel ELF is not for x86_64");
+            return Err("ELF is not for x86_64");
         }
         if read_u16(bytes, 0x10)? != TYPE_POSITION_INDEPENDENT {
-            return Err("kernel ELF is not position-independent");
+            return Err("ELF is not position-independent");
         }
         Ok(Self {
             bytes,
@@ -60,8 +62,37 @@ impl<'a> ElfFile<'a> {
         (0..self.segment_count).map(|index| self.segment(index))
     }
 
+    /// Page-aligned range of virtual addresses the loadable segments cover.
+    /// Its length is how much memory the image needs.
+    pub fn load_span(&self) -> Result<Range<u64>, Error> {
+        let mut lowest = u64::MAX;
+        let mut highest = 0;
+        for segment in self.segments() {
+            let segment = segment?;
+            if segment.kind != SEGMENT_LOAD {
+                continue;
+            }
+            if segment.file_size > segment.memory_size {
+                return Err("ELF segment is bigger in the file than in memory");
+            }
+            let end = segment
+                .virtual_address
+                .checked_add(segment.memory_size)
+                .ok_or("ELF segment ends beyond the address space")?;
+            lowest = lowest.min(segment.virtual_address);
+            highest = highest.max(end);
+        }
+        if lowest >= highest {
+            return Err("ELF has nothing to load");
+        }
+        Ok(lowest / PAGE_SIZE * PAGE_SIZE..highest.div_ceil(PAGE_SIZE) * PAGE_SIZE)
+    }
+
     fn segment(&self, index: usize) -> Result<Segment, Error> {
-        let at = self.segment_table + index * self.segment_entry_size;
+        let at = index
+            .checked_mul(self.segment_entry_size)
+            .and_then(|offset| offset.checked_add(self.segment_table))
+            .ok_or("ELF program header table is out of range")?;
         Ok(Segment {
             kind: read_u32(self.bytes, at)?,
             file_offset: read_u64(self.bytes, at + 0x08)?,

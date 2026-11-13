@@ -4,7 +4,11 @@
 //! entry point. Nothing in here is UEFI-specific: the loader translates
 //! firmware data into these plain types first.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+
+mod region_list;
+
+pub use region_list::{RegionList, RegionListFull};
 
 pub const PAGE_SIZE: u64 = 4096;
 

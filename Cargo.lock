@@ -7,10 +7,15 @@ name = "boot_info"
 version = "0.1.0"
 
 [[package]]
+name = "elf"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
  "boot_info",
+ "x86",
 ]
 
 [[package]]
@@ -18,4 +23,9 @@ name = "loader"
 version = "0.1.0"
 dependencies = [
  "boot_info",
+ "elf",
 ]
+
+[[package]]
+name = "x86"
+version = "0.1.0"

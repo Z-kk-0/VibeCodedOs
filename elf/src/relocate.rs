@@ -1,4 +1,4 @@
-//! Fixing up absolute addresses inside the loaded kernel.
+//! Fixing up absolute addresses inside a loaded image.
 //!
 //! The kernel is linked as if it started at address 0. Wherever it needs an
 //! absolute address (pointers in statics, vtables, …) the linker leaves a
@@ -21,8 +21,8 @@ const RELOCATION_NONE: u64 = 0;
 /// value = load offset + addend. The only kind a static PIE needs.
 const RELOCATION_RELATIVE: u64 = 8;
 
-/// `image` holds the kernel's memory starting at virtual address `lowest`;
-/// `load_offset` is how far the kernel was moved from where it was linked.
+/// `image` holds the memory starting at virtual address `lowest`;
+/// `load_offset` is how far the image was moved from where it was linked.
 pub fn apply(elf: &ElfFile, image: &mut [u8], lowest: u64, load_offset: u64) -> Result<(), Error> {
     let mut dynamic = None;
     for segment in elf.segments() {
@@ -35,19 +35,24 @@ pub fn apply(elf: &ElfFile, image: &mut [u8], lowest: u64, load_offset: u64) -> 
         return Ok(()); // nothing to relocate
     };
 
-    // Image offset of a virtual address.
-    let offset = |address: u64| (address - lowest) as usize;
+    // Where in `image` a virtual address lives.
+    let offset = |address: u64| {
+        address
+            .checked_sub(lowest)
+            .map(|offset| offset as usize)
+            .ok_or("ELF address lies below the image")
+    };
 
     let mut table = 0;
     let mut table_size = 0;
     let mut entry_size = 0;
-    let mut at = offset(dynamic_address);
+    let mut at = offset(dynamic_address)?;
     loop {
         let tag = read_u64(image, at)?;
         let value = read_u64(image, at + 8)?;
         match tag {
             DYNAMIC_END => break,
-            DYNAMIC_RELA_TABLE => table = offset(value),
+            DYNAMIC_RELA_TABLE => table = offset(value)?,
             DYNAMIC_RELA_TABLE_SIZE => table_size = value as usize,
             DYNAMIC_RELA_ENTRY_SIZE => entry_size = value as usize,
             _ => {}
@@ -58,7 +63,7 @@ pub fn apply(elf: &ElfFile, image: &mut [u8], lowest: u64, load_offset: u64) -> 
         return Ok(());
     }
     if entry_size == 0 {
-        return Err("kernel ELF relocation table has no entry size");
+        return Err("ELF relocation table has no entry size");
     }
 
     for entry in (table..table + table_size).step_by(entry_size) {
@@ -69,10 +74,10 @@ pub fn apply(elf: &ElfFile, image: &mut [u8], lowest: u64, load_offset: u64) -> 
             RELOCATION_NONE => {}
             RELOCATION_RELATIVE => write_u64(
                 image,
-                offset(target),
+                offset(target)?,
                 load_offset.wrapping_add_signed(addend),
             )?,
-            _ => return Err("kernel ELF uses an unsupported relocation type"),
+            _ => return Err("ELF uses an unsupported relocation type"),
         }
     }
     Ok(())
