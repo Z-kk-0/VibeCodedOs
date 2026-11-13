@@ -1,0 +1,48 @@
+//! `cargo xtask test`: every check we have, fastest first. Stops at the
+//! first failure. Green here = safe to commit.
+
+use crate::build::{KERNEL_TARGET, LOADER_TARGET};
+use crate::{Options, Result, qemu, run_command};
+use std::process::Command;
+
+pub fn everything(options: Options) -> Result {
+    step("Formatting", "fmt --all --check")?;
+    // Default workspace members = the host-buildable crates, incl. their tests.
+    step("Lints: host crates", "clippy --all-targets -- -D warnings")?;
+    step(
+        "Lints: kernel",
+        &format!("clippy --package kernel --target {KERNEL_TARGET} -- -D warnings"),
+    )?;
+    // The loader embeds the kernel binary, so it has to exist first.
+    step(
+        "Build: kernel",
+        &format!("build --package kernel --target {KERNEL_TARGET}"),
+    )?;
+    step(
+        "Lints: loader",
+        &format!("clippy --package loader --target {LOADER_TARGET} -- -D warnings"),
+    )?;
+    step("Unit tests", "test")?;
+
+    if !options.quick {
+        println!("\n=== Boot test ===");
+        qemu::boot_test(Options {
+            crash: false,
+            ..options
+        })?;
+        println!("\n=== Crash test ===");
+        qemu::boot_test(Options {
+            crash: true,
+            ..options
+        })?;
+    }
+    println!("\nALL CHECKS PASSED");
+    Ok(())
+}
+
+/// Runs `cargo <arguments>`; arguments are separated by spaces.
+fn step(name: &str, arguments: &str) -> Result {
+    println!("\n=== {name} ===");
+    run_command(Command::new("cargo").args(arguments.split_whitespace()))
+        .map_err(|error| format!("{name}: {error}"))
+}

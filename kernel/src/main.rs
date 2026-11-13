@@ -78,7 +78,7 @@ fn print_memory_summary(boot_info: &BootInfo) {
     }
 }
 
-/// Built in only by `tools/boot-test.ps1 -CrashTest`: touches memory the
+/// Built in only by `cargo xtask boot-test --crash`: touches memory the
 /// firmware never mapped (the upper half), to check that faults get reported.
 fn crash_test() {
     println!("Crash test: reading unmapped memory...");
