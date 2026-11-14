@@ -100,9 +100,14 @@ Done:
       faulty programs are stopped, not the kernel (DECISIONS 018)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
-   Design first, together with the owner: this is the heart of Hematite.
-2. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **Multi-core** (owner's choice: before capabilities) – start the other cores, per-core
+   GDT/TSS/stacks/timer/current task, scheduler across cores, TLB shootdown. See "Known limits".
+2. **Capabilities + ownership IPC** – handles, endpoints, page move/borrow (DECISIONS 012).
+   Draft agreed with the owner: per-process handle tables in the kernel; objects `Memory`
+   (owned, move or lend) and `Endpoint` (cloneable); synchronous `call`/`receive`/`reply`;
+   borrows (`&`, `&mut`) end with the reply and are enforced by the page tables on every core
+   (lender's page unmapped or read-only while lent); `write` replaced by a `log` service.
+3. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
