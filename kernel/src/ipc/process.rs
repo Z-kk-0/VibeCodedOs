@@ -53,7 +53,17 @@ impl Process {
     /// Maps `frames` at a fresh address of the mapping area and returns it.
     /// On failure nothing stays mapped.
     pub fn map_frames(&mut self, frames: &[u64], writable: bool) -> Option<u64> {
-        let start = self.area.reserve(frames.len() as u64)?;
+        self.map_frames_aligned(frames, writable, PAGE_SIZE)
+    }
+
+    /// The same, at an address that is a multiple of `align` (a power of two).
+    pub fn map_frames_aligned(
+        &mut self,
+        frames: &[u64],
+        writable: bool,
+        align: u64,
+    ) -> Option<u64> {
+        let start = self.area.reserve_aligned(frames.len() as u64, align)?;
         for (page, &frame) in (start..).step_by(PAGE_SIZE as usize).zip(frames) {
             if self.space.map(page, frame, user_flags(writable)).is_err() {
                 self.release_pages(start, frames.len());

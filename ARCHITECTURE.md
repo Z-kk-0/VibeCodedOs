@@ -134,7 +134,7 @@ last receiving end is gone and keep a generation per badge for `revoke`; queue w
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
-| `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
+| `heap` | any + host | Heap allocator: size classes in self-aligned slabs (returned when empty) + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
 | `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, freeing exited tasks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, IPIs). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
@@ -177,12 +177,10 @@ Next, in order (each one a milestone with its own decision entry):
 - Multi-core (DECISIONS 019): at most 64 cores, xAPIC mode only (APIC IDs up to 255; firmware
   that already switched to x2APIC isn't supported). One run queue lock for all cores; no CPU
   affinity. One shootdown request at a time (each covers a whole range).
-- Heap: size-class pages are never returned, alignment > 4 KiB refused. Heap addresses are
-  never reused (on purpose, like memory objects; empty page tables are freed).
+- Heap addresses are never reused (on purpose, like memory objects; empty page tables are freed).
 - Tasks: no priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task
   still stops the whole machine (in user programs it only ends the program).
-- Programs: one task per program, embedded in the kernel (no file system). The user heap's
-  size-class pages, like the kernel's, stay with the program until it ends.
+- Programs: one task per program, embedded in the kernel (no file system).
 - IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; directory names are first come, first served.
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.

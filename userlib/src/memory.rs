@@ -15,9 +15,15 @@ pub struct Memory {
 impl Memory {
     /// `pages` fresh, zeroed pages (4 KiB each).
     pub fn new(pages: u64) -> Result<Self, Error> {
+        Self::new_aligned(pages, 0)
+    }
+
+    /// The same, mapped at a multiple of `align` bytes (a power of two).
+    pub fn new_aligned(pages: u64, align: u64) -> Result<Self, Error> {
         let result = system_call(Registers {
             rax: abi::MEMORY_NEW,
             rdi: pages,
+            rsi: align,
             ..Registers::default()
         });
         check(result.rax)?;

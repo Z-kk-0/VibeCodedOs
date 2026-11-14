@@ -12,15 +12,18 @@ use scheduling::CoreId;
 /// `memory_new(pages)`.
 pub fn memory_new(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
     let me = tasks.current_id(core);
-    let pages = frame.rdi;
+    let (pages, align) = (frame.rdi, frame.rsi.max(paging::PAGE_SIZE));
     let result = (|| {
         let process = process(tasks, me).map_err(|_| abi::ERROR_WRONG_KIND)?;
         if pages == 0 || pages > abi::MAX_MEMORY_PAGES {
             return Err(abi::ERROR_OUT_OF_MEMORY);
         }
+        if !align.is_power_of_two() {
+            return Err(abi::ERROR_BAD_ARGUMENT);
+        }
         let memory = object::Memory::new(pages).ok_or(abi::ERROR_OUT_OF_MEMORY)?;
         let address = process
-            .map_frames(&memory.frames(), true)
+            .map_frames_aligned(&memory.frames(), true, align)
             .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
         let handle = process.handles.insert(Capability::Memory(OwnedMemory {
             memory,

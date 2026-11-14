@@ -41,8 +41,9 @@ pub const RECEIVE: u64 = 4;
 /// `reply(reply_handle, attachment, words)` – answers that call and uses
 /// the reply handle up. Ends any borrow that came with the call.
 pub const REPLY: u64 = 5;
-/// `memory_new(pages)` – a new, zeroed `Memory` object, owned by and mapped
-/// into the caller. Returns the handle in `rsi`, address in `rdx`, size in `rcx`.
+/// `memory_new(pages, align)` – a new, zeroed `Memory` object, owned by and
+/// mapped into the caller at a multiple of `align` bytes (`rsi`, a power of
+/// two; 0 = a page). Returns the handle in `rsi`, address in `rdx`, size in `rcx`.
 pub const MEMORY_NEW: u64 = 6;
 /// `drop(handle)` – gives a handle up. Owned memory is freed; a dropped
 /// reply handle tells its caller `ERROR_PEER_GONE`; when the last
@@ -121,8 +122,10 @@ pub const ERROR_BAD_MODE: u64 = u64::MAX - 9;
 pub const ERROR_TIMED_OUT: u64 = u64::MAX - 10;
 /// The receiver revoked this sending end's badge.
 pub const ERROR_REVOKED: u64 = u64::MAX - 11;
+/// A number that makes no sense here, e.g. an alignment that isn't a power of two.
+pub const ERROR_BAD_ARGUMENT: u64 = u64::MAX - 12;
 
-const LOWEST_ERROR: u64 = ERROR_REVOKED;
+const LOWEST_ERROR: u64 = ERROR_BAD_ARGUMENT;
 
 pub fn is_error(result: u64) -> bool {
     result >= LOWEST_ERROR
@@ -180,7 +183,7 @@ mod tests {
 
     #[test]
     fn every_error_counts_as_an_error() {
-        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_REVOKED] {
+        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_BAD_ARGUMENT] {
             assert!(is_error(error));
         }
         assert!(!is_error(0));

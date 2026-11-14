@@ -69,8 +69,8 @@ struct ObjectPages {
 // SAFETY: each memory object is fresh, writable, page-aligned and ours
 // alone; `unmap_pages` only gets back what `map_pages` returned.
 unsafe impl PageSource for ObjectPages {
-    fn map_pages(&mut self, count: usize) -> Option<NonNull<u8>> {
-        let memory = Memory::new(count as u64).ok()?;
+    fn map_pages(&mut self, count: usize, align: usize) -> Option<NonNull<u8>> {
+        let memory = Memory::new_aligned(count as u64, align as u64).ok()?;
         let address = memory.address as u64;
         let handle = memory.into_handle();
         if !self.registry.insert(address, handle) {

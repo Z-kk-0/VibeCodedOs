@@ -26,8 +26,15 @@ impl MappingArea {
     /// The start address for an object of `pages` pages, or `None` if the
     /// area is used up.
     pub fn reserve(&mut self, pages: u64) -> Option<u64> {
+        self.reserve_aligned(pages, self.page_size)
+    }
+
+    /// The same, starting at a multiple of `align` (a power of two).
+    pub fn reserve_aligned(&mut self, pages: u64, align: u64) -> Option<u64> {
         let size = pages.checked_add(1)?.checked_mul(self.page_size)?; // + guard page
-        let start = self.next;
+        let start = self
+            .next
+            .checked_next_multiple_of(align.max(self.page_size))?;
         let next = start.checked_add(size)?;
         if next > self.end {
             return None;
@@ -47,6 +54,18 @@ mod tests {
         assert_eq!(area.reserve(1), Some(0x1000_0000));
         assert_eq!(area.reserve(3), Some(0x1000_2000));
         assert_eq!(area.reserve(1), Some(0x1000_6000));
+    }
+
+    #[test]
+    fn aligned_objects_skip_ahead() {
+        let mut area = MappingArea::new(0x1000, 0x10_0000, 0x1000);
+        assert_eq!(area.reserve(1), Some(0x1000));
+        assert_eq!(area.reserve_aligned(2, 0x8000), Some(0x8000));
+        assert_eq!(
+            area.reserve(1),
+            Some(0xB000),
+            "after the 2 pages and the guard"
+        );
     }
 
     #[test]

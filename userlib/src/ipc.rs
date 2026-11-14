@@ -28,6 +28,7 @@ impl Error {
             abi::ERROR_BAD_MODE => "bad attach mode",
             abi::ERROR_TIMED_OUT => "timed out",
             abi::ERROR_REVOKED => "revoked",
+            abi::ERROR_BAD_ARGUMENT => "bad argument",
             _ => "unknown error",
         }
     }

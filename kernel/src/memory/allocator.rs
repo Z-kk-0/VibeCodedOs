@@ -58,8 +58,9 @@ struct HeapPages {
 // SAFETY: every page is a freshly allocated frame mapped writable at an
 // address no one else uses; `unmap_pages` returns exactly those frames.
 unsafe impl PageSource for HeapPages {
-    fn map_pages(&mut self, count: usize) -> Option<NonNull<u8>> {
-        let start = self.next;
+    fn map_pages(&mut self, count: usize, align: usize) -> Option<NonNull<u8>> {
+        // Addresses are never reused, so skipping some to align costs nothing.
+        let start = self.next.checked_next_multiple_of(align as u64)?;
         let end = start.checked_add((count * PAGE_SIZE) as u64)?;
         if end > HEAP_END {
             return None;

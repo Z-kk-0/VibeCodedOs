@@ -1,22 +1,29 @@
-//! The kernel heap allocator (DECISIONS.md, 016).
+//! The heap allocator, used by the kernel and by `userlib` (DECISIONS.md,
+//! 016, 022).
 //!
 //! Small requests (up to 2 KiB) are rounded up to a power of two and served
-//! from one free list per size ("size classes"): allocating and freeing is
-//! popping and pushing a list – O(1), no searching, no fragmentation inside
-//! a class. A free block stores the link to the next free block in its own
-//! first bytes, so the lists cost no extra memory. Bigger requests get whole
-//! pages of their own, which go back to the system when freed.
+//! from *slabs*: runs of pages, aligned to their own size, carved into
+//! blocks of one size class. A slab's bookkeeping sits in its first
+//! block(s), so the slab of any block is found by masking its address –
+//! freeing is O(1) and needs no table. Free blocks store the link to the
+//! next free block in their own first bytes. A slab that becomes empty goes
+//! back to the page source (one empty single-page slab per class is kept, so
+//! a loop of allocate/free doesn't map and unmap all the time).
 //!
-//! Where pages come from is up to the caller (`PageSource`), so this runs
-//! in the kernel and in host unit tests alike.
+//! Bigger requests get whole pages of their own, aligned as asked, which go
+//! back when freed. Where pages come from is up to the caller
+//! (`PageSource`), so this runs in the kernel, in programs and in host unit
+//! tests alike.
 
 #![cfg_attr(not(test), no_std)]
 
+mod slab;
 #[cfg(test)]
 mod tests;
 
 use core::alloc::Layout;
 use core::ptr::{NonNull, null_mut};
+use slab::{Slab, SlabList};
 
 pub const PAGE_SIZE: usize = 4096;
 const SMALLEST_BLOCK: usize = 16;
@@ -28,26 +35,23 @@ const CLASS_COUNT: usize = 8;
 /// Where the heap gets its memory.
 ///
 /// # Safety
-/// `map_pages` must return `count` contiguous, writable, page-aligned pages
-/// that nothing else uses. `unmap_pages` only ever receives exactly what an
-/// earlier `map_pages` call returned.
+/// `map_pages` must return `count` contiguous, writable pages aligned to
+/// `align` bytes (a power of two, at least `PAGE_SIZE`) that nothing else
+/// uses. `unmap_pages` only ever receives exactly what an earlier
+/// `map_pages` call returned.
 pub unsafe trait PageSource {
-    fn map_pages(&mut self, count: usize) -> Option<NonNull<u8>>;
+    fn map_pages(&mut self, count: usize, align: usize) -> Option<NonNull<u8>>;
     fn unmap_pages(&mut self, start: NonNull<u8>, count: usize);
-}
-
-/// Lives inside a free block.
-struct FreeBlock {
-    next: *mut FreeBlock,
 }
 
 enum Request {
     Small { class: usize },
-    Large { pages: usize },
+    Large { pages: usize, align: usize },
 }
 
 pub struct Heap<S> {
-    free_lists: [*mut FreeBlock; CLASS_COUNT],
+    /// Per class: the slabs that still have free blocks.
+    partial: [SlabList; CLASS_COUNT],
     source: S,
     bytes_in_use: usize,
     pages_mapped: usize,
@@ -59,28 +63,31 @@ unsafe impl<S: Send> Send for Heap<S> {}
 impl<S: PageSource> Heap<S> {
     pub const fn new(source: S) -> Self {
         Self {
-            free_lists: [null_mut(); CLASS_COUNT],
+            partial: [const { SlabList::EMPTY }; CLASS_COUNT],
             source,
             bytes_in_use: 0,
             pages_mapped: 0,
         }
     }
 
-    /// Returns null if out of memory or if the alignment is stricter than a page.
+    /// Returns null if out of memory.
     pub fn allocate(&mut self, layout: Layout) -> *mut u8 {
         match classify(layout) {
-            None => null_mut(),
-            Some(Request::Small { class }) => {
-                if self.free_lists[class].is_null() && !self.refill(class) {
+            Request::Small { class } => {
+                if self.partial[class].is_empty() && !self.add_slab(class) {
                     return null_mut();
                 }
-                let block = self.free_lists[class];
-                // SAFETY: `block` is a free block in memory we own.
-                self.free_lists[class] = unsafe { (*block).next };
+                let slab = self.partial[class].first();
+                // SAFETY: slabs in the list are live and have a free block.
+                let block = unsafe { (*slab).take_block() };
+                // SAFETY: as above.
+                if unsafe { (*slab).is_full() } {
+                    self.partial[class].remove(slab);
+                }
                 self.bytes_in_use += block_size(class);
-                block.cast()
+                block
             }
-            Some(Request::Large { pages }) => match self.source.map_pages(pages) {
+            Request::Large { pages, align } => match self.source.map_pages(pages, align) {
                 Some(start) => {
                     self.pages_mapped += pages;
                     self.bytes_in_use += pages * PAGE_SIZE;
@@ -96,26 +103,34 @@ impl<S: PageSource> Heap<S> {
     /// have been freed already.
     pub unsafe fn deallocate(&mut self, pointer: *mut u8, layout: Layout) {
         match classify(layout) {
-            Some(Request::Small { class }) => {
-                let block = pointer.cast::<FreeBlock>();
-                // SAFETY: the block is ours again (caller contract) and big
-                // and aligned enough for a `FreeBlock` (≥ 16 bytes).
-                unsafe {
-                    block.write(FreeBlock {
-                        next: self.free_lists[class],
-                    })
-                };
-                self.free_lists[class] = block;
+            Request::Small { class } => {
+                let slab = Slab::of(pointer, slab_bytes(class));
+                // SAFETY: the block came from this live slab (caller contract).
+                let was_full = unsafe { (*slab).is_full() };
+                // SAFETY: as above; the block is ours again.
+                unsafe { (*slab).give_back(pointer) };
                 self.bytes_in_use -= block_size(class);
+                if was_full {
+                    self.partial[class].push(slab);
+                }
+                // SAFETY: as above.
+                let empty = unsafe { (*slab).is_empty() };
+                // Keep one small empty slab per class against map/unmap churn;
+                // give back any further one, and multi-page ones right away.
+                let keep =
+                    slab_bytes(class) == PAGE_SIZE && !self.partial[class].has_more_than_one();
+                if empty && !keep {
+                    self.partial[class].remove(slab);
+                    self.release_slab(class, slab);
+                }
             }
-            Some(Request::Large { pages }) => {
+            Request::Large { pages, .. } => {
                 // SAFETY: `allocate` returned a non-null pointer for this layout.
                 let start = unsafe { NonNull::new_unchecked(pointer) };
                 self.source.unmap_pages(start, pages);
                 self.pages_mapped -= pages;
                 self.bytes_in_use -= pages * PAGE_SIZE;
             }
-            None => unreachable!("`allocate` never succeeds for this layout"),
         }
     }
 
@@ -124,55 +139,57 @@ impl<S: PageSource> Heap<S> {
         self.bytes_in_use
     }
 
-    /// Pages taken from the source. Pages of size classes are kept for reuse.
+    /// Pages taken from the source right now.
     pub fn pages_mapped(&self) -> usize {
         self.pages_mapped
     }
 
-    /// Carves a fresh page into blocks of one class.
-    fn refill(&mut self, class: usize) -> bool {
-        let Some(page) = self.source.map_pages(1) else {
+    fn add_slab(&mut self, class: usize) -> bool {
+        let bytes = slab_bytes(class);
+        let Some(start) = self.source.map_pages(bytes / PAGE_SIZE, bytes) else {
             return false;
         };
-        self.pages_mapped += 1;
-        // Chained last to first, so blocks are handed out in address order.
-        for offset in (0..PAGE_SIZE).step_by(block_size(class)).rev() {
-            // SAFETY: `offset` stays inside the fresh page, which we own.
-            let block = unsafe { page.as_ptr().add(offset).cast::<FreeBlock>() };
-            // SAFETY: as above; blocks are ≥ 16 bytes and 16-byte aligned.
-            unsafe {
-                block.write(FreeBlock {
-                    next: self.free_lists[class],
-                })
-            };
-            self.free_lists[class] = block;
-        }
+        self.pages_mapped += bytes / PAGE_SIZE;
+        // SAFETY: fresh pages of exactly `bytes`, aligned to `bytes`, ours.
+        let slab = unsafe { Slab::create(start.as_ptr(), bytes, block_size(class)) };
+        self.partial[class].push(slab);
         true
+    }
+
+    fn release_slab(&mut self, class: usize, slab: *mut Slab) {
+        let bytes = slab_bytes(class);
+        // SAFETY: a slab pointer is never null.
+        let start = unsafe { NonNull::new_unchecked(slab.cast::<u8>()) };
+        self.source.unmap_pages(start, bytes / PAGE_SIZE);
+        self.pages_mapped -= bytes / PAGE_SIZE;
     }
 }
 
-fn classify(layout: Layout) -> Option<Request> {
-    if layout.align() > PAGE_SIZE {
-        return None;
-    }
-    // Power-of-two blocks inside page-aligned pages are aligned to their own
-    // size – so rounding up to the alignment satisfies it for free.
+fn classify(layout: Layout) -> Request {
+    // Power-of-two blocks inside slabs aligned to their size are aligned to
+    // their own size – so rounding up to the alignment satisfies it for free.
     let size = layout
         .size()
         .max(layout.align())
         .max(SMALLEST_BLOCK)
         .next_power_of_two();
-    Some(if size <= LARGEST_SMALL_BLOCK {
+    if size <= LARGEST_SMALL_BLOCK {
         Request::Small {
             class: (size / SMALLEST_BLOCK).trailing_zeros() as usize,
         }
     } else {
         Request::Large {
-            pages: layout.size().div_ceil(PAGE_SIZE),
+            pages: layout.size().div_ceil(PAGE_SIZE).max(1),
+            align: layout.align().max(PAGE_SIZE),
         }
-    })
+    }
 }
 
 fn block_size(class: usize) -> usize {
     SMALLEST_BLOCK << class
+}
+
+/// At least 16 blocks per slab, so the bookkeeping block costs ≤ 1/16.
+fn slab_bytes(class: usize) -> usize {
+    (block_size(class) * 16).max(PAGE_SIZE)
 }
