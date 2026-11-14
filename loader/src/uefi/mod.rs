@@ -5,11 +5,13 @@
 //! hence `#[repr(C)]` everywhere.
 
 mod boot_services;
+mod configuration_table;
 mod memory;
 mod system_table;
 mod text_output;
 
 pub use boot_services::BootServices;
+pub use configuration_table::{ACPI_10_TABLE, ACPI_20_TABLE, ConfigurationTable};
 pub use memory::{MemoryDescriptor, MemoryType};
 pub use system_table::SystemTable;
 pub use text_output::SimpleTextOutputProtocol;

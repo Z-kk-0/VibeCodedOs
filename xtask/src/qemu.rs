@@ -15,6 +15,9 @@ const READY_MARKER: &str = "Hematite kernel ready.";
 /// Printed by the exception handler for the deliberate crash (`--crash`).
 const CRASH_MARKER: &str = "EXCEPTION: Page Fault";
 const BOOT_TEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// Hematite must use every core (DECISIONS.md, ground rules), so QEMU gets
+/// several. `HEMATITE_CORES` overrides it, e.g. to try 1 or 8.
+const DEFAULT_CORES: usize = 4;
 
 pub fn run(options: Options) -> Result {
     let esp = build(options)?;
@@ -44,7 +47,13 @@ pub fn boot_test(options: Options) -> Result {
     let _ = child.kill();
     let _ = child.wait();
 
-    println!("{}", read_log(&log_path));
+    let log = read_log(&log_path);
+    println!("{log}");
+    // A normal boot must also have started every core.
+    let cores_marker = format!("{} cores online.", cores()?);
+    if found && !options.crash && !log.contains(&cores_marker) {
+        return Err(format!("boot test failed: no '{cores_marker}'"));
+    }
     if found {
         println!("\nBOOT TEST OK ('{expected}')");
         Ok(())
@@ -84,6 +93,7 @@ fn qemu_command(esp: &Path) -> Result<Command> {
     let mut command = Command::new(&qemu);
     command
         .args(["-machine", "q35", "-m", "256M", "-net", "none"])
+        .args(["-smp", &cores()?.to_string()])
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -93,6 +103,17 @@ fn qemu_command(esp: &Path) -> Result<Command> {
         .arg("-drive")
         .arg(format!("format=raw,file=fat:rw:{}", esp.display()));
     Ok(command)
+}
+
+fn cores() -> Result<usize> {
+    match env::var("HEMATITE_CORES") {
+        Ok(value) => value
+            .parse()
+            .ok()
+            .filter(|count| (1..=64).contains(count))
+            .ok_or_else(|| format!("HEMATITE_CORES must be 1 to 64, not '{value}'")),
+        Err(_) => Ok(DEFAULT_CORES),
+    }
 }
 
 fn find_qemu() -> Result<PathBuf> {

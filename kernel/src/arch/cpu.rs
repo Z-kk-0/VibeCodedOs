@@ -88,11 +88,11 @@ pub fn flush_translation(virtual_address: u64) {
 
 /// Whether the no-execute bit in page tables is active (EFER.NXE).
 pub fn no_execute_enabled() -> bool {
-    const EFER: u32 = 0xC000_0080;
     const NO_EXECUTE_ENABLE: u64 = 1 << 11;
-    // SAFETY: EFER exists on every x86_64 CPU.
-    unsafe { read_msr(EFER) & NO_EXECUTE_ENABLE != 0 }
+    efer() & NO_EXECUTE_ENABLE != 0
 }
+
+const EFER: u32 = 0xC000_0080;
 
 /// Reads a model-specific register.
 ///
@@ -122,4 +122,24 @@ pub unsafe fn write_msr(msr: u32, value: u64) {
             options(nostack, preserves_flags),
         );
     }
+}
+
+pub fn cr0() -> u64 {
+    let value;
+    // SAFETY: reading CR0 has no side effects.
+    unsafe { asm!("mov {}, cr0", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
+}
+
+pub fn cr4() -> u64 {
+    let value;
+    // SAFETY: reading CR4 has no side effects.
+    unsafe { asm!("mov {}, cr4", out(reg) value, options(nomem, nostack, preserves_flags)) };
+    value
+}
+
+/// The extended feature enable register (long mode, no-execute, …).
+pub fn efer() -> u64 {
+    // SAFETY: EFER exists on every x86_64 CPU.
+    unsafe { read_msr(EFER) }
 }

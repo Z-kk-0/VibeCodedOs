@@ -20,6 +20,12 @@ pub type Error = &'static str;
 const SPARE_DESCRIPTORS: usize = 32;
 const MAX_EXIT_ATTEMPTS: usize = 3;
 
+/// What the kernel needs to know about the machine besides its memory.
+pub struct Platform {
+    pub acpi_root: u64,
+    pub core_startup: u64,
+}
+
 pub struct Handoff {
     raw_map: &'static mut [u8],
     boot_area: &'static mut [u8],
@@ -77,6 +83,7 @@ impl Handoff {
         boot_services: &BootServices,
         image: Handle,
         _console: Console,
+        platform: Platform,
     ) -> Result<u64, Error> {
         // ExitBootServices fails if the map changed since we read it (firmware
         // timers may still allocate). Then: read again, try again (spec §7.4.6).
@@ -89,7 +96,12 @@ impl Handoff {
             if unsafe { boot_services.exit_boot_services(image, map.key) }.is_ok() {
                 // --- Boot services are gone. ---
                 let descriptors = descriptors(self.raw_map, map.size, map.descriptor_size);
-                return Ok(write_boot_info(self.boot_area, descriptors, self.capacity));
+                return Ok(write_boot_info(
+                    self.boot_area,
+                    descriptors,
+                    self.capacity,
+                    &platform,
+                ));
             }
         }
         Err("ExitBootServices keeps failing")
@@ -114,6 +126,7 @@ fn write_boot_info(
     area: &'static mut [u8],
     descriptors: impl Iterator<Item = MemoryDescriptor>,
     capacity: usize,
+    platform: &Platform,
 ) -> u64 {
     let area_physical = area.as_ptr() as u64;
     let (info_bytes, region_bytes) = area.split_at_mut(size_of::<BootInfo>());
@@ -144,6 +157,8 @@ fn write_boot_info(
         info.write(BootInfo::new(
             regions_in_window as *const MemoryRegion,
             region_count,
+            platform.acpi_root,
+            platform.core_startup,
         ))
     };
     PHYSICAL_MEMORY_WINDOW + area_physical
@@ -160,6 +175,7 @@ fn kind_of(memory_type: MemoryType) -> MemoryKind {
         MemoryType::HEMATITE_KERNEL => MemoryKind::Kernel,
         MemoryType::HEMATITE_BOOT_INFO => MemoryKind::BootInfo,
         MemoryType::HEMATITE_PAGE_TABLES => MemoryKind::PageTables,
+        MemoryType::HEMATITE_CORE_STARTUP => MemoryKind::CoreStartup,
         MemoryType::ACPI_RECLAIM => MemoryKind::AcpiReclaimable,
         MemoryType::ACPI_NVS => MemoryKind::AcpiNvs,
         _ => MemoryKind::Reserved,

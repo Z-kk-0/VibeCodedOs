@@ -51,6 +51,8 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     memory::start(boot_info);
 
     task::init();
+    let cores = arch::start_other_cores(boot_info);
+    println!("{cores} cores online.");
     task::check();
     task::check_user_programs();
 
@@ -60,6 +62,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         crash_test();
     }
     heartbeat()
+}
+
+/// Where every core but the first continues once `arch` set it up: it joins
+/// the scheduler, starts its timer and becomes that core's idle task.
+fn other_core_main() -> ! {
+    task::add_this_core();
+    arch::start_timer_on_this_core();
+    arch::report_ready();
+    loop {
+        cpu::wait_for_interrupt();
+    }
 }
 
 /// Nothing else to do yet: the boot task sleeps (the idle task halts the
@@ -87,6 +100,7 @@ fn crash_test() {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    arch::stop_other_cores();
     emergency_println!("\nKERNEL PANIC: {info}");
-    cpu::halt_forever()
+    arch::stop_this_core()
 }

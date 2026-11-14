@@ -2,7 +2,8 @@
 //! CPU jumps when it fires. The gate format lives in the `x86` crate.
 //!
 //! Every vector points at its own stub in `interrupts/stubs.rs`; all stubs
-//! end up in one Rust function (DECISIONS.md, 008).
+//! end up in one Rust function (DECISIONS.md, 008). All cores share this
+//! one table – each loads it with `load`.
 
 use super::gdt::{DOUBLE_FAULT_STACK_INDEX, KERNEL_CODE};
 use super::interrupts::stub_address;
@@ -15,8 +16,11 @@ const VECTOR_COUNT: usize = 256;
 
 static mut IDT: [Gate; VECTOR_COUNT] = [Gate::MISSING; VECTOR_COUNT];
 
+/// Fills the table and loads it on this core.
+///
 /// # Safety
-/// Call once, after the GDT (the gates refer to its selectors and IST).
+/// Call once, on the boot core, after its GDT (the gates refer to its
+/// selectors and IST) and before any other core starts.
 pub unsafe fn init() {
     let mut gates = [Gate::MISSING; VECTOR_COUNT];
     for (vector, gate) in (0u64..).zip(gates.iter_mut()) {
@@ -31,20 +35,28 @@ pub unsafe fn init() {
     let syscall = usize::from(abi::SYSCALL_VECTOR);
     gates[syscall] = gates[syscall].callable_from_user_mode();
 
+    // SAFETY: no other core runs yet, so nobody reads the table meanwhile;
+    // it's a static and never moves.
+    unsafe {
+        (&raw mut IDT).write(gates);
+        load();
+    }
+}
+
+/// Makes this core use the table.
+///
+/// # Safety
+/// `init` must have run, and this core's GDT must be loaded.
+pub unsafe fn load() {
     #[repr(C, packed)]
     struct Pointer {
         limit: u16,
         base: u64,
     }
-
-    // SAFETY: single-threaded early boot; the IDT is a static and never moves.
-    unsafe {
-        let idt = &raw mut IDT;
-        idt.write(gates);
-        let pointer = Pointer {
-            limit: (size_of::<[Gate; VECTOR_COUNT]>() - 1) as u16,
-            base: idt as u64,
-        };
-        asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
-    }
+    let pointer = Pointer {
+        limit: (size_of::<[Gate; VECTOR_COUNT]>() - 1) as u16,
+        base: (&raw const IDT) as u64,
+    };
+    // SAFETY: the table is filled and lives forever.
+    unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)) };
 }

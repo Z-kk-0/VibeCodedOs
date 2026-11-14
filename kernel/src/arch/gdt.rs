@@ -1,12 +1,14 @@
-//! Our Global Descriptor Table and Task State Segment.
-//! The descriptor formats live in the `x86` crate; this module only decides
-//! the layout and loads it into the CPU.
+//! The Global Descriptor Table and Task State Segment – one of each per
+//! core, inside the core's `PerCore` (which is how a core finds its own
+//! data, see `per_core.rs`). The descriptor formats live in the `x86`
+//! crate; this module only decides the layout and loads it into the CPU.
 
+use super::per_core::{PerCore, this_core};
 use core::arch::asm;
 use core::mem::size_of;
 use x86::gdt::{
-    KERNEL_CODE_DESCRIPTOR, KERNEL_DATA_DESCRIPTOR, TaskStateSegment, USER_CODE_DESCRIPTOR,
-    USER_DATA_DESCRIPTOR, USER_REQUESTED_PRIVILEGE, tss_descriptor,
+    KERNEL_CODE_DESCRIPTOR, KERNEL_DATA_DESCRIPTOR, USER_CODE_DESCRIPTOR, USER_DATA_DESCRIPTOR,
+    USER_REQUESTED_PRIVILEGE, tss_descriptor,
 };
 
 /// Selectors = byte offsets into the GDT. User data comes before user code:
@@ -16,39 +18,28 @@ pub const KERNEL_DATA: u16 = 0x10;
 pub const USER_DATA: u16 = 0x18 | USER_REQUESTED_PRIVILEGE;
 pub const USER_CODE: u16 = 0x20 | USER_REQUESTED_PRIVILEGE;
 const TASK_STATE: u16 = 0x28;
-const GDT_ENTRIES: usize = 7;
+/// Null, kernel code + data, user data + code, TSS (takes two slots).
+pub const GDT_ENTRIES: usize = 7;
 
 /// Interrupt Stack Table slot (1-based) used for double faults.
 pub const DOUBLE_FAULT_STACK_INDEX: u8 = 1;
 
-const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
-
-#[repr(align(16))]
-#[allow(
-    dead_code,
-    reason = "only the CPU uses this memory, Rust never reads it"
-)]
-struct Stack([u8; DOUBLE_FAULT_STACK_SIZE]);
-
-/// A double fault often means our normal stack is broken (e.g. overflowed),
-/// so its handler gets a stack of its own.
-static mut DOUBLE_FAULT_STACK: Stack = Stack([0; DOUBLE_FAULT_STACK_SIZE]);
-static mut TSS: TaskStateSegment = TaskStateSegment::empty();
-/// Null, kernel code + data, user data + code, TSS (takes two slots).
-static mut GDT: [u64; GDT_ENTRIES] = [0; GDT_ENTRIES];
-
+/// Fills `core`'s GDT and TSS and loads them into this CPU. A double fault
+/// often means the normal stack is broken (e.g. overflowed), so its handler
+/// runs on `double_fault_stack_top`, a stack of its own.
+///
 /// # Safety
-/// Call once, with interrupts disabled.
-pub unsafe fn init() {
-    // SAFETY: single-threaded early boot; nothing else touches these statics.
-    // The pointers stay valid forever because the statics never move.
+/// Call once per core, on that core, with interrupts disabled;
+/// `double_fault_stack_top` must be the top of a stack that lives forever.
+pub unsafe fn init(core: &'static PerCore, double_fault_stack_top: u64) {
+    // SAFETY: nothing else touches this core's GDT and TSS yet; they live
+    // forever, so the CPU may keep pointing at them.
     unsafe {
-        let stack_top = (&raw const DOUBLE_FAULT_STACK) as u64 + DOUBLE_FAULT_STACK_SIZE as u64;
-        let tss = &raw mut TSS;
-        (*tss).set_interrupt_stack(DOUBLE_FAULT_STACK_INDEX, stack_top);
+        let tss = core.tss.get();
+        (*tss).set_interrupt_stack(DOUBLE_FAULT_STACK_INDEX, double_fault_stack_top);
 
         let [tss_low, tss_high] = tss_descriptor(tss as u64);
-        let gdt = &raw mut GDT;
+        let gdt = core.gdt.get();
         gdt.write([
             0,
             KERNEL_CODE_DESCRIPTOR,
@@ -70,11 +61,10 @@ pub unsafe fn init() {
 /// Interrupts must be off (the scheduler calls this mid-switch), and
 /// `stack_top` must be the top of a valid kernel stack.
 pub unsafe fn set_kernel_stack(stack_top: u64) {
-    // SAFETY: with interrupts off nobody else touches the TSS; the CPU only
-    // reads this field on the next ring 3 → ring 0 transition.
-    let tss = &raw mut TSS;
-    // SAFETY: see above.
-    unsafe { (*tss).set_kernel_stack(stack_top) };
+    // SAFETY: it's this core's own TSS, and with interrupts off nobody else
+    // touches it; the CPU only reads this field on the next ring 3 → ring 0
+    // transition.
+    unsafe { (*this_core().tss.get()).set_kernel_stack(stack_top) };
 }
 
 /// Activates the GDT, reloads every segment register, loads the TSS.

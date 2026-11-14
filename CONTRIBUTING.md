@@ -14,6 +14,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
    - macOS: `brew install qemu` (firmware included)
 
    If `cargo xtask` can't find them, set `HEMATITE_QEMU` / `HEMATITE_OVMF` to the full paths.
+   QEMU gets 4 cores; `HEMATITE_CORES=1` (up to 64) changes that for `run` and `boot-test`.
 
 ## Commands
 
@@ -44,7 +45,7 @@ readable but not slow, files under ~200 lines, names that say what things are, c
 the edges, code and docs in English.
 
 **Where does new code go?**
-- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
+- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `acpi`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
   new small crate (add it to the workspace `members` *and* `default-members`), with unit tests.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
 - A new user program → a crate in `programs/` using `userlib`, plus: workspace `members` (not
@@ -70,5 +71,13 @@ the edges, code and docs in English.
   `emergency_println!`, which can't deadlock.
 - **Locks switch interrupts off** (`sync::SpinLock`), so a task can't be preempted while holding one
   – keep critical sections short, and never call `sleep` or `exit` while holding a lock.
+- **Everything runs on several cores at once** (DECISIONS 019). Shared data needs a lock or atomics;
+  "the other task is blocked" is no protection. Never busy-wait for another core with interrupts
+  off except inside `SpinLock::lock` – its spin loop answers TLB shootdowns, anything else would
+  deadlock the core waiting for your answer.
+- **`arch::core_index()` / `this_core()` need the core's own GDT** (it's how a core recognises
+  itself). It's loaded in `arch::init` (boot core) and first thing in `smp::ap_entry`.
+- **Changing a mapping needs a shootdown**: kernel pages via `paging::unmap`, process pages via
+  `AddressSpace::map` – both do it. Don't call `invlpg` directly for shared mappings.
 - **Debugging a hang:** `cargo xtask run`, then look at the last serial line. QEMU's `-d int`
   (add it in `xtask/src/qemu.rs`) logs every interrupt and exception.

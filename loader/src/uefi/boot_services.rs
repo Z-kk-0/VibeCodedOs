@@ -67,6 +67,22 @@ impl BootServices {
         status.into_result().map(|()| address)
     }
 
+    /// Like `allocate_pages`, but the pages must end at or below `limit`.
+    pub fn allocate_pages_below(
+        &self,
+        memory_type: MemoryType,
+        count: usize,
+        limit: u64,
+    ) -> Result<u64, Status> {
+        // In: the highest allowed address of the last byte. Out: the start.
+        let mut address = limit - 1;
+        // SAFETY: `address` is a valid in/out pointer for the duration of the call.
+        let status = unsafe {
+            (self.allocate_pages)(AllocateType::MAX_ADDRESS, memory_type, count, &mut address)
+        };
+        status.into_result().map(|()| address)
+    }
+
     /// Like `allocate_pages`, but zero-filled and as a byte slice. Rounds
     /// up to whole pages. Never freed – the kernel reclaims it later.
     pub fn allocate_zeroed(

@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use core::mem::size_of;
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub const KERNEL_STACK_SIZE: usize = 16 * 1024;
 
@@ -20,6 +21,11 @@ pub struct TaskContext {
     pub kernel_stack_top: u64,
     /// `Some` for user programs; kernel tasks use the kernel's own.
     pub address_space: Option<AddressSpace>,
+    /// Set while a core switches away from this task and is still on its
+    /// stack; the interrupt stub clears it (DECISIONS.md, 019). Boxed: the
+    /// stub writes to it after the scheduler lock is released, when the
+    /// run queue may already have moved this context.
+    pub leaving: Box<AtomicBool>,
     /// Freed together with the task. `None` for the boot task, which keeps
     /// running on the kernel's boot stack.
     _kernel_stack: Option<Box<[u8]>>,
@@ -37,6 +43,7 @@ impl TaskContext {
             saved_frame: null_mut(),
             kernel_stack_top: 0,
             address_space: None,
+            leaving: Box::new(AtomicBool::new(false)),
             _kernel_stack: None,
         }
     }
@@ -63,6 +70,12 @@ impl TaskContext {
         Self::with_first_frame(name, Some(address_space), |_| {
             InterruptFrame::for_new_user_task(entry, user_stack_pointer)
         })
+    }
+
+    /// Whether no core is on this task's stack anymore, so it may run
+    /// elsewhere or be freed.
+    pub fn is_off_every_core(&self) -> bool {
+        !self.leaving.load(Ordering::Acquire)
     }
 
     /// The page tables to switch to when this task runs.
@@ -96,6 +109,7 @@ impl TaskContext {
             saved_frame: frame,
             kernel_stack_top: top,
             address_space,
+            leaving: Box::new(AtomicBool::new(false)),
             _kernel_stack: Some(stack),
         }
     }

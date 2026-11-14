@@ -1,7 +1,7 @@
 //! Tasks: independent flows of execution, switched preemptively by the
-//! timer (DECISIONS.md, 017). A task is either a kernel task or a user
-//! program in its own address space (018). Which task runs next is decided
-//! by the `scheduling` crate; this module does the switching.
+//! timer (DECISIONS.md, 017) on every core (019). A task is either a kernel
+//! task or a user program in its own address space (018). Which task runs
+//! next is decided by the `scheduling` crate; this module does the switching.
 //!
 //! A task switch is nothing but answering an interrupt with a different
 //! `InterruptFrame`: the interrupt stub then continues on that task's stack.
@@ -10,10 +10,12 @@ mod checks;
 mod context;
 mod exits;
 mod program;
+mod switch;
 
 pub use checks::{check, check_user_programs};
 pub use exits::{Exit, wait};
 pub use program::spawn_program;
+pub use switch::switch;
 
 use crate::arch::{self, InterruptFrame, cpu};
 use crate::memory::AddressSpace;
@@ -21,15 +23,22 @@ use crate::sync::SpinLock;
 use crate::time;
 use alloc::boxed::Box;
 use context::TaskContext;
-use scheduling::{RunQueue, State, TaskId};
+use scheduling::{CoreId, RunQueue, State, TaskId};
 
 static SCHEDULER: SpinLock<Option<RunQueue<TaskContext>>> = SpinLock::new(None);
 
-/// Makes the code running now task 0 ("boot") and creates the idle task.
-/// From now on, every timer tick may switch tasks. Needs the heap.
+/// Makes the code running now task 0 ("boot") and creates core 0's idle
+/// task. From now on, every timer tick may switch tasks. Needs the heap.
 pub fn init() {
     let idle = TaskContext::new_kernel("idle", idle_entry, 0);
     *SCHEDULER.lock() = Some(RunQueue::new(TaskContext::running("boot"), idle));
+}
+
+/// A freshly started core joins: what it runs now becomes its idle task.
+pub fn add_this_core() {
+    let core = arch::core_index();
+    let added = with_scheduler(|scheduler, _| scheduler.add_core(TaskContext::running("idle")));
+    assert_eq!(added, core, "cores must join the scheduler in order");
 }
 
 /// Starts `work` as a new kernel task. When `work` returns, the task exits.
@@ -47,15 +56,17 @@ pub fn spawn(name: &'static str, work: impl FnOnce() + Send + 'static) -> TaskId
 /// Sleeps for at least `ticks` timer ticks without using the CPU.
 pub fn sleep(ticks: u64) {
     let until_tick = time::ticks() + ticks;
-    with_scheduler(|scheduler| scheduler.set_current_state(State::Sleeping { until_tick }));
+    with_scheduler(|scheduler, core| {
+        scheduler.set_current_state(core, State::Sleeping { until_tick })
+    });
     arch::yield_now();
 }
 
 /// Ends the current kernel task. Its stack is freed at a later switch.
 fn exit() -> ! {
-    with_scheduler(|scheduler| {
-        exits::record(scheduler.current_id(), Exit::Code(0));
-        scheduler.set_current_state(State::Exited);
+    with_scheduler(|scheduler, core| {
+        exits::record(scheduler.current_id(core), Exit::Code(0));
+        scheduler.set_current_state(core, State::Exited);
     });
     loop {
         arch::yield_now(); // never comes back: exited tasks aren't scheduled
@@ -63,25 +74,30 @@ fn exit() -> ! {
 }
 
 pub fn task_count() -> usize {
-    with_scheduler(|scheduler| scheduler.task_count())
+    with_scheduler(|scheduler, _| scheduler.task_count())
+}
+
+/// How many cores take part in scheduling.
+pub fn core_count() -> usize {
+    with_scheduler(|scheduler, _| scheduler.core_count())
 }
 
 pub fn current_name() -> &'static str {
-    with_scheduler(|scheduler| scheduler.current().name)
+    with_scheduler(|scheduler, core| scheduler.current(core).name)
 }
 
 /// Runs `action` with the current program's address space (`None` for
 /// kernel tasks). Interrupts stay off meanwhile.
 pub fn with_current_address_space<R>(action: impl FnOnce(Option<&AddressSpace>) -> R) -> R {
-    with_scheduler(|scheduler| action(scheduler.current().address_space.as_ref()))
+    with_scheduler(|scheduler, core| action(scheduler.current(core).address_space.as_ref()))
 }
 
 /// For use inside an interrupt (system call, fault): ends the current task
 /// and returns the frame of the task to continue with.
 pub fn end_current(frame: *mut InterruptFrame, exit: Exit) -> *mut InterruptFrame {
-    with_scheduler(|scheduler| {
-        exits::record(scheduler.current_id(), exit);
-        scheduler.set_current_state(State::Exited);
+    with_scheduler(|scheduler, core| {
+        exits::record(scheduler.current_id(core), exit);
+        scheduler.set_current_state(core, State::Exited);
     });
     switch(frame)
 }
@@ -90,47 +106,21 @@ pub fn end_current(frame: *mut InterruptFrame, exit: Exit) -> *mut InterruptFram
 /// sleep and returns the frame of the task to continue with.
 pub fn sleep_current(frame: *mut InterruptFrame, ticks: u64) -> *mut InterruptFrame {
     let until_tick = time::ticks() + ticks;
-    with_scheduler(|scheduler| scheduler.set_current_state(State::Sleeping { until_tick }));
+    with_scheduler(|scheduler, core| {
+        scheduler.set_current_state(core, State::Sleeping { until_tick })
+    });
     switch(frame)
 }
 
-/// Called by the timer and yield interrupts with the interrupted task's
-/// frame. Returns the frame of the task to continue with.
-pub fn switch(frame: *mut InterruptFrame) -> *mut InterruptFrame {
+fn with_scheduler<R>(action: impl FnOnce(&mut RunQueue<TaskContext>, CoreId) -> R) -> R {
     let mut guard = SCHEDULER.lock();
-    let Some(scheduler) = guard.as_mut() else {
-        return frame; // scheduler not started yet
-    };
-    scheduler.current().saved_frame = frame;
-    // Free finished tasks *before* picking the next one: the current task is
-    // never among them, so we never free the stack – or the address space –
-    // we're running on.
-    while let Some(finished) = scheduler.take_exited() {
-        drop(finished);
-    }
-    scheduler.switch(time::ticks());
-
-    let next = scheduler.current();
-    // SAFETY: interrupts are off; the stack belongs to `next`, and every
-    // address space maps the kernel identically, so this code stays mapped.
-    unsafe {
-        if next.kernel_stack_top != 0 {
-            arch::set_kernel_stack(next.kernel_stack_top);
-        }
-        let root = next.page_table_root();
-        if root != cpu::page_table_root() {
-            cpu::set_page_table_root(root);
-        }
-    }
-    next.saved_frame
-}
-
-fn with_scheduler<R>(action: impl FnOnce(&mut RunQueue<TaskContext>) -> R) -> R {
-    action(SCHEDULER.lock().as_mut().expect("scheduler not started"))
+    // Inside the lock interrupts are off, so we can't move to another core.
+    let core = arch::core_index();
+    action(guard.as_mut().expect("scheduler not started"), core)
 }
 
 fn spawn_context(context: TaskContext) -> TaskId {
-    with_scheduler(|scheduler| scheduler.spawn(context))
+    with_scheduler(|scheduler, _| scheduler.spawn(context))
 }
 
 /// Where every spawned kernel task begins.

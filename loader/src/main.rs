@@ -17,7 +17,8 @@ mod uefi;
 
 use console::Console;
 use core::fmt::Write;
-use uefi::{Handle, Status, SystemTable};
+use handoff::Platform;
+use uefi::{ACPI_10_TABLE, ACPI_20_TABLE, BootServices, Handle, MemoryType, Status, SystemTable};
 
 /// The kernel, baked into this binary at compile time (DECISIONS.md, 004).
 static KERNEL_ELF: &[u8] = include_bytes!(env!("HEMATITE_KERNEL_ELF"));
@@ -28,9 +29,10 @@ static KERNEL_ELF: &[u8] = include_bytes!(env!("HEMATITE_KERNEL_ELF"));
 extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> Status {
     // SAFETY: The firmware guarantees the system table and everything it
     // points to stay valid until we call ExitBootServices.
-    let (mut console, boot_services) = unsafe {
+    let (system_table, mut console, boot_services) = unsafe {
         let system_table = &*system_table;
         (
+            system_table,
             Console::new(system_table.console_out),
             &*system_table.boot_services,
         )
@@ -50,6 +52,13 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
         kernel.entry
     );
 
+    let platform = find_platform(system_table, boot_services);
+    let _ = writeln!(
+        console,
+        "ACPI root at {:#x}, core startup pages at {:#x}.",
+        platform.acpi_root, platform.core_startup
+    );
+
     let handoff =
         handoff::prepare(boot_services).unwrap_or_else(|message| fail(&mut console, message));
     let address_space = address_space::build(boot_services, &kernel, handoff.physical_memory_end)
@@ -61,12 +70,32 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
         address_space.window_size >> 30
     );
 
-    match handoff.finish(boot_services, image, console) {
+    match handoff.finish(boot_services, image, console, platform) {
         // SAFETY: boot services are gone, and the address space maps the
         // kernel plus everything the loader still runs on.
         Ok(boot_info) => unsafe { kernel.start(&address_space, boot_info) },
         // The console is gone at this point; nothing left to tell anyone.
         Err(_) => halt_forever(),
+    }
+}
+
+/// What the kernel needs to start the other CPU cores. Neither is fatal if
+/// missing: the kernel then simply runs on one core (0 = "none").
+fn find_platform(system_table: &SystemTable, boot_services: &BootServices) -> Platform {
+    let acpi_root = system_table
+        .find_configuration_table(ACPI_20_TABLE)
+        .or_else(|| system_table.find_configuration_table(ACPI_10_TABLE))
+        .unwrap_or(0);
+    let core_startup = boot_services
+        .allocate_pages_below(
+            MemoryType::HEMATITE_CORE_STARTUP,
+            boot_info::CORE_STARTUP_PAGES as usize,
+            boot_info::CORE_STARTUP_LIMIT,
+        )
+        .unwrap_or(0);
+    Platform {
+        acpi_root,
+        core_startup,
     }
 }
 

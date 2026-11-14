@@ -58,6 +58,11 @@ core::arch::global_asm!(
     // after a task switch another task's frame on another stack.
     // Switching the stack pointer to it *is* the task switch.
     "    movq %rax, %rsp",
+    // Now we're off the previous task's stack, so another core may run it:
+    // clear its "still leaving this core" flag (`rdx`, a dummy if nothing
+    // switched). x86 never moves a store before earlier memory accesses,
+    // so this plain store is a release (DECISIONS.md, 019).
+    "    movb $0, (%rdx)",
     "    popq %r15",
     "    popq %r14",
     "    popq %r13",

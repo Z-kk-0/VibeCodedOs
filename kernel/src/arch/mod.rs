@@ -6,35 +6,84 @@ pub mod cpu;
 mod gdt;
 mod idt;
 mod interrupts;
+mod per_core;
 mod pic;
 mod pit;
 pub mod port;
+mod shootdown;
+mod smp;
 mod start;
 
 pub use apic::TimerSetup;
 pub use gdt::set_kernel_stack;
 pub use interrupts::{InterruptFrame, yield_now};
+pub use per_core::{CoreMask, release_after_switch, this_core_index as core_index};
+pub use shootdown::{
+    any_pending as shootdown_pending, sent_count as shootdown_count,
+    serve_pending as serve_shootdown,
+};
+pub use smp::{report_ready, start_other_cores, stop_other_cores, stop_this_core};
 
-/// Installs our own segment and interrupt tables, replacing the firmware's,
-/// and silences the legacy interrupt controllers.
+use core::sync::atomic::Ordering;
+use per_core::BOOT_CORE;
+
+const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+
+#[repr(align(16))]
+#[allow(
+    dead_code,
+    reason = "only the CPU uses this memory, Rust never reads it"
+)]
+struct Stack([u8; DOUBLE_FAULT_STACK_SIZE]);
+
+/// The boot core's double-fault stack (the others get theirs from the heap).
+static mut BOOT_DOUBLE_FAULT_STACK: Stack = Stack([0; DOUBLE_FAULT_STACK_SIZE]);
+
+/// Installs our own segment and interrupt tables on the boot core,
+/// replacing the firmware's, and silences the legacy interrupt controllers.
 pub fn init() {
     // SAFETY: called exactly once, early, with interrupts disabled
     // (start.rs does `cli`), before anything relies on the old tables.
+    // The stack is a static that only the CPU touches.
     unsafe {
-        gdt::init();
+        let stack = (&raw const BOOT_DOUBLE_FAULT_STACK) as u64;
+        gdt::init(&BOOT_CORE, stack + DOUBLE_FAULT_STACK_SIZE as u64);
         idt::init();
         pic::disable();
     }
+    per_core::register(&BOOT_CORE);
+    per_core::set_online(&BOOT_CORE);
 }
 
-/// Starts the periodic timer interrupt and turns interrupts on.
-/// Each tick calls `crate::time::on_tick`, then `crate::task::switch`.
+/// Starts the boot core's periodic timer interrupt and turns interrupts on.
+/// Each tick calls `crate::task::switch` (and on core 0 `crate::time::on_tick`).
 pub fn start_timer(interrupts_per_second: u32) -> TimerSetup {
     // SAFETY: `init` ran (IDT present, PIC silenced); every vector has a
     // handler, so enabling interrupts is fine afterwards.
     unsafe {
         let setup = apic::start_timer(interrupts_per_second);
+        BOOT_CORE.apic_id.store(apic::id(), Ordering::Relaxed);
         cpu::enable_interrupts();
         setup
     }
+}
+
+/// The same for a core started later, with the boot core's measurement.
+pub fn start_timer_on_this_core() {
+    // SAFETY: this core's GDT and IDT are loaded (`smp::ap_entry`), the
+    // boot core measured the timer before starting any other core.
+    unsafe {
+        apic::start_timer_on_this_core();
+        cpu::enable_interrupts();
+    }
+}
+
+/// After unmapping a page of the kernel's half: every core forgets it.
+pub fn flush_kernel_page_everywhere(address: u64) {
+    shootdown::flush_kernel_page(address);
+}
+
+/// After changing a page of an address space active on `cores`.
+pub fn flush_page_on(cores: CoreMask, address: u64) {
+    shootdown::flush_page(cores, address);
 }

@@ -5,7 +5,7 @@
 //! come from the `x86` crate.
 
 use super::InterruptFrame;
-use crate::arch::cpu;
+use crate::arch::{self, cpu};
 use crate::task::{self, Exit};
 use x86::exceptions::{BREAKPOINT, PAGE_FAULT, describe_page_fault, name};
 
@@ -36,8 +36,9 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
         return task::end_current(frame, Exit::Killed(self::name(vector)));
     }
+    arch::stop_other_cores();
     report(frame);
-    cpu::halt_forever();
+    arch::stop_this_core();
 }
 
 fn report(frame: &InterruptFrame) {

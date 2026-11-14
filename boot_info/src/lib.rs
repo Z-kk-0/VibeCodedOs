@@ -33,22 +33,40 @@ pub const PHYSICAL_MEMORY_WINDOW: u64 = 0xFFFF_8000_0000_0000;
 /// "HEMATITE" – exactly 8 bytes, as a number; lets the kernel detect a garbage pointer.
 pub const MAGIC: u64 = u64::from_le_bytes(*b"HEMATITE");
 
+/// How many pages the loader reserves for starting the other CPU cores.
+pub const CORE_STARTUP_PAGES: u64 = 2;
+/// A core wakes up in 16-bit real mode and can only start below 1 MiB.
+pub const CORE_STARTUP_LIMIT: u64 = 0x10_0000;
+
 #[repr(C)]
 pub struct BootInfo {
     pub magic: u64,
     memory_regions: *const MemoryRegion,
     memory_region_count: usize,
+    /// Physical address of the ACPI root pointer (RSDP), 0 if the firmware
+    /// has none. The kernel finds the other CPU cores through it.
+    pub acpi_root: u64,
+    /// Physical address of `CORE_STARTUP_PAGES` pages below
+    /// `CORE_STARTUP_LIMIT` (kind `CoreStartup`), 0 if there were none.
+    pub core_startup: u64,
 }
 
 impl BootInfo {
     /// # Safety
     /// `regions` must point to `count` initialized entries that stay valid
     /// and unchanged for as long as this `BootInfo` is used.
-    pub unsafe fn new(regions: *const MemoryRegion, count: usize) -> Self {
+    pub unsafe fn new(
+        regions: *const MemoryRegion,
+        count: usize,
+        acpi_root: u64,
+        core_startup: u64,
+    ) -> Self {
         Self {
             magic: MAGIC,
             memory_regions: regions,
             memory_region_count: count,
+            acpi_root,
+            core_startup,
         }
     }
 
@@ -97,6 +115,9 @@ pub enum MemoryKind {
     FirmwareReclaimable,
     /// The page tables the loader built. In use – never free.
     PageTables,
+    /// Low memory where the other CPU cores start (`BootInfo::core_startup`).
+    /// In use for as long as the kernel may start cores – never free.
+    CoreStartup,
     /// ACPI tables. Free after the kernel has read them.
     AcpiReclaimable,
     /// Firmware needs this even after boot. Never touch.
@@ -106,13 +127,14 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 9] = [
+    pub const ALL: [MemoryKind; 10] = [
         MemoryKind::Usable,
         MemoryKind::Kernel,
         MemoryKind::BootInfo,
         MemoryKind::LoaderReclaimable,
         MemoryKind::FirmwareReclaimable,
         MemoryKind::PageTables,
+        MemoryKind::CoreStartup,
         MemoryKind::AcpiReclaimable,
         MemoryKind::AcpiNvs,
         MemoryKind::Reserved,
@@ -132,6 +154,7 @@ impl MemoryKind {
             MemoryKind::LoaderReclaimable => "loader (reclaimable)",
             MemoryKind::FirmwareReclaimable => "firmware (reclaimable)",
             MemoryKind::PageTables => "page tables",
+            MemoryKind::CoreStartup => "core startup",
             MemoryKind::AcpiReclaimable => "ACPI (reclaimable)",
             MemoryKind::AcpiNvs => "ACPI NVS",
             MemoryKind::Reserved => "reserved",

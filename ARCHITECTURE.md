@@ -17,6 +17,8 @@ UEFI firmware (OVMF in QEMU)
   └─ loads \EFI\BOOT\BOOTX64.EFI = our loader, calls efi_main          loader/src/main.rs
        ├─ copies the embedded kernel ELF into firmware memory,
        │  relocates it for 0xFFFF_FFFF_8000_0000 (static PIE)            loader/src/kernel_image.rs, elf/
+       ├─ finds the ACPI root pointer, reserves 2 pages below 1 MiB
+       │  where the other cores will start                               loader/src/main.rs
        ├─ allocates the handoff buffers, peeks at the memory map         loader/src/handoff.rs
        ├─ builds page tables: kernel (W^X), physical memory window,
        │  temporary identity map                                         loader/src/address_space.rs, paging/
@@ -25,7 +27,8 @@ UEFI firmware (OVMF in QEMU)
             kernel _start: cli, own stack                                kernel/src/arch/start.rs
             kernel_main:                                                 kernel/src/main.rs
               ├─ serial port COM1 (all output)                           kernel/src/serial.rs
-              ├─ own GDT + TSS, IDT, legacy PIC masked                   kernel/src/arch/
+              ├─ own GDT + TSS (in the boot core's PerCore), IDT,
+              │  legacy PIC masked                                       kernel/src/arch/
               ├─ int3 round trip (tests the interrupt path)
               ├─ APIC timer calibrated with the PIT, 100 Hz, sti         kernel/src/arch/apic.rs
               ├─ waits 10 ticks
@@ -35,12 +38,23 @@ UEFI firmware (OVMF in QEMU)
               │    ├─ reclaims firmware + loader memory
               │    └─ self-checks: frames, heap (Vec, Box, String, BTreeMap)  memory/checks.rs
               ├─ task::init: boot code becomes task 0, idle task created  kernel/src/task/
-              ├─ task::check: 2 busy tasks + 1 sleeper must interleave   task/checks.rs
+              ├─ start_other_cores: ACPI MADT → APIC IDs; for each core   kernel/src/arch/smp/, acpi/
+              │    INIT, STARTUP ×2 → startup code: real mode → long mode
+              │    → ap_entry: kernel page tables, own GDT/TSS, IDT
+              │    → other_core_main: joins scheduler, timer on, idles   kernel/src/main.rs
+              ├─ "N cores online."          ← the boot test checks N
+              ├─ task::check: 4 busy tasks + 1 sleeper must interleave,
+              │  on more than one core; freeing their stacks must have
+              │  sent TLB shootdowns                                     task/checks.rs
               ├─ user programs: hello must exit 0, intruder must be      programs/, task/program.rs
               │  stopped; both address spaces freed
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
-              └─ heartbeat: boot task sleeps 10 s at a time; idle task runs hlt
+              └─ heartbeat: boot task sleeps 10 s at a time; idle tasks run hlt
 ```
+
+Physical memory the loader reserves for starting cores (`MemoryKind::CoreStartup`, never freed):
+page 1 = the startup code (`kernel/src/arch/smp/startup_code.rs`, copied there), page 2 = the root
+of the page tables cores start on.
 
 Address space (upper half = kernel, shared by all; lower half = one per user program):
 
@@ -59,6 +73,23 @@ call) that may be another task's frame on another stack – that is the whole ta
 (DECISIONS 017). Switching to a user program also loads its CR3 and puts its kernel stack into the
 TSS, where the CPU finds it on the next interrupt from ring 3 (DECISIONS 018).
 
+Multi-core (DECISIONS 019): every core runs the same path. A core finds its own data
+(`arch/per_core.rs`: GDT, TSS, index, APIC ID) with `sgdt`, because its GDT is the first field of
+its `PerCore`. All cores share one run queue (one lock), each with its own current and idle task.
+Besides the frame, the dispatcher returns the previous task's `leaving` flag; the stub clears it
+once it switched stacks, and only then may another core run or free that task. Changing a mapping
+sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address space loaded.
+
+| Vector | What |
+|---|---|
+| `0x00`–`0x1F` | CPU exceptions |
+| `0x20` | APIC timer (every core; only core 0 advances the clock) |
+| `0x30` | yield (`int 0x30`, kernel tasks) |
+| `0x40` | TLB shootdown IPI |
+| `0x41` | stop IPI (after a kernel panic on another core) |
+| `0x80` | system call (`int 0x80`, callable from ring 3) |
+| `0xFF` | APIC spurious interrupt |
+
 System calls (`abi` crate): `int 0x80`, number in `rax`, arguments in `rdi`/`rsi`, result in `rax`.
 Today: `exit`, `write`, `sleep`. Programs use `userlib` (wrappers, `println!`, panic handler).
 
@@ -68,13 +99,14 @@ Today: `exit`, `write`, `sleep`. Programs use `userlib` (wrappers, `println!`, p
 |---|---|---|
 | `loader` | `x86_64-unknown-uefi` | UEFI app: loads the kernel, builds its page tables, leaves the firmware. Hand-written UEFI types in `loader/src/uefi/`. |
 | `kernel` | `x86_64-unknown-none` | The kernel. Everything CPU-specific is in `kernel/src/arch/`. |
-| `boot_info` | both + host | The loader→kernel contract: `BootInfo`, memory regions, address space layout. No UEFI types. |
+| `boot_info` | both + host | The loader→kernel contract: `BootInfo` (memory regions, ACPI root, core startup pages), address space layout. No UEFI types. |
+| `acpi` | any + host | Just enough ACPI to find the CPU cores: RSDP → XSDT/RSDT → MADT, checksums. Memory access via a trait. Unit-tested. |
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
-| `scheduling` | any + host | Run queue: round robin, sleeping, idle fallback, freeing exited tasks. Unit-tested. |
-| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers). Unit-tested. |
+| `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, freeing exited tasks. Unit-tested. |
+| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, IPIs). Unit-tested. |
 | `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, error codes. |
 | `userlib` | `x86_64-unknown-none` | What programs link against: system calls, `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs, embedded into the kernel: `hello`, `intruder` (attacks the kernel on purpose). |
@@ -98,23 +130,24 @@ Done:
 - [x] Preemptive kernel tasks: spawn, sleep, exit, round robin at 100 Hz (DECISIONS 017)
 - [x] User mode: programs in ring 3 with own address spaces, system calls via `int 0x80`,
       faulty programs are stopped, not the kernel (DECISIONS 018)
+- [x] Multi-core: every core the ACPI tables list is started and schedules tasks; per-core
+      GDT/TSS/timer/idle task, TLB shootdown via IPIs (DECISIONS 019)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Multi-core** (owner's choice: before capabilities) – start the other cores, per-core
-   GDT/TSS/stacks/timer/current task, scheduler across cores, TLB shootdown. See "Known limits".
-2. **Capabilities + ownership IPC** – handles, endpoints, page move/borrow (DECISIONS 012).
+1. **Capabilities + ownership IPC** – handles, endpoints, page move/borrow (DECISIONS 012).
    Draft agreed with the owner: per-process handle tables in the kernel; objects `Memory`
    (owned, move or lend) and `Endpoint` (cloneable); synchronous `call`/`receive`/`reply`;
    borrows (`&`, `&mut`) end with the reply and are enforced by the page tables on every core
    (lender's page unmapped or read-only while lent); `write` replaced by a `log` service.
-3. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+2. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
-- **Single core – to be fixed next** (ground rule "multi-core by design"). Already fine for SMP:
-  `sync::SpinLock` (atomic, interrupts off while held), the frame table, heap and page-table locks.
-  Not yet: one global TSS/GDT, one scheduler "current task", the APIC timer on one core only, and
-  no TLB shootdown when mappings change.
+- Multi-core (DECISIONS 019): at most 64 cores, xAPIC mode only (APIC IDs up to 255; firmware
+  that already switched to x2APIC isn't supported). One run queue lock for all cores; no CPU
+  affinity. Shootdowns go one page and one request at a time. A core that doesn't answer within
+  1 s stops further cores from being started. After a kernel panic, a core spinning with
+  interrupts off ignores the stop IPI.
 - Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
 - Tasks: 16 KiB kernel stacks without guard pages (an overflow corrupts the heap silently), no
   priorities, no blocking on events yet – only sleeping. An exception in a *kernel* task still

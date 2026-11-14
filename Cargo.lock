@@ -7,6 +7,10 @@ name = "abi"
 version = "0.1.0"
 
 [[package]]
+name = "acpi"
+version = "0.1.0"
+
+[[package]]
 name = "boot_info"
 version = "0.1.0"
 
@@ -41,6 +45,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "acpi",
  "boot_info",
  "elf",
  "frame_table",

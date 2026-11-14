@@ -1,4 +1,4 @@
-use super::{BootServices, Handle, SimpleTextOutputProtocol, TableHeader};
+use super::{BootServices, ConfigurationTable, Handle, SimpleTextOutputProtocol, TableHeader};
 use core::ffi::c_void;
 
 /// The root table the firmware hands to our entry point.
@@ -22,5 +22,5 @@ pub struct SystemTable {
     pub runtime_services: *mut c_void,
     pub boot_services: *mut BootServices,
     pub number_of_table_entries: usize,
-    pub configuration_table: *mut c_void,
+    pub configuration_table: *const ConfigurationTable,
 }

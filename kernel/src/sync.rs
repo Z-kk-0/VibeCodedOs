@@ -1,13 +1,14 @@
 //! Sharing data inside the kernel.
 
-use crate::arch::cpu;
+use crate::arch::{self, cpu};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// A lock that spins until it's free. While held, interrupts are off on this
-/// core: otherwise an interrupt handler wanting the same lock would wait
-/// forever for code that can't continue until the handler returns.
+/// A lock that spins until it's free – on another core, the holder keeps
+/// running meanwhile. While held, interrupts are off on this core:
+/// otherwise an interrupt handler wanting the same lock would wait forever
+/// for code that can't continue until the handler returns.
 pub struct SpinLock<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -31,6 +32,11 @@ impl<T> SpinLock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            // With interrupts off we'd never hear a shootdown request – and
+            // its sender may be the one holding this lock (DECISIONS.md, 019).
+            if arch::shootdown_pending() {
+                arch::serve_shootdown();
+            }
             core::hint::spin_loop();
         }
         SpinLockGuard {

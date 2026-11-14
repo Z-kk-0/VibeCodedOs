@@ -19,6 +19,7 @@ impl MemoryType {
     pub const HEMATITE_KERNEL: Self = Self(0x8000_0000);
     pub const HEMATITE_BOOT_INFO: Self = Self(0x8000_0001);
     pub const HEMATITE_PAGE_TABLES: Self = Self(0x8000_0002);
+    pub const HEMATITE_CORE_STARTUP: Self = Self(0x8000_0003);
 }
 
 /// Where `AllocatePages` may place an allocation.
@@ -28,6 +29,8 @@ pub struct AllocateType(pub u32);
 
 impl AllocateType {
     pub const ANY_PAGES: Self = Self(0);
+    /// Anywhere at or below the address passed in.
+    pub const MAX_ADDRESS: Self = Self(1);
 }
 
 /// One entry of the memory map. The firmware may use a bigger stride than

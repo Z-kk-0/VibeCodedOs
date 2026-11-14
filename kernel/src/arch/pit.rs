@@ -1,4 +1,5 @@
-//! Busy-waiting with the PIT – only used once, to measure the APIC timer.
+//! Busy-waiting with the PIT: to measure the APIC timer, and for the pauses
+//! the core startup sequence needs. Only the boot task uses it.
 
 use super::port;
 use x86::pit::{
