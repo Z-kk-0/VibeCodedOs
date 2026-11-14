@@ -1,102 +1,46 @@
-//! Boot-time proof that user mode, capabilities and ownership IPC work.
+//! Boot-time proof that user space can run itself (DECISIONS.md, 020, 021).
 //!
-//! Starts the two services (`log`, `shout`) and five programs, each with
-//! exactly the handles it needs (handle numbers in each program's docs):
-//!
-//! - `hello` prints through `log` – the only way to print.
-//! - `owner` lends `shout` a page `&mut` (comes back upper-cased), then
-//!   lends `vandal` the page `&` – vandal tries to write, is stopped, and
-//!   owner gets its page back unchanged.
-//! - `giver` moves a page to `shout`, then reaches for it: must be stopped.
-//! - `intruder` forges a handle, then reads kernel memory: must be stopped.
+//! The kernel starts exactly one program, `init`, and gives it the console
+//! and one `Program` handle per built-in program. Everything else – which
+//! services run, who may talk to whom, the checks that the ownership rules
+//! hold – is `init`'s business (see `programs/init`). The kernel only looks
+//! at the result: init exits with 0 only if every check passed.
 
-use super::object::{Capability, Endpoint};
+use super::object::{Capability, ProgramCapability};
 use crate::programs;
 use crate::task::{Exit, core_count, sleep, spawn_program, task_count, wait};
 
-pub fn check() {
-    let log = Endpoint::new();
-    let shout = Endpoint::new();
-    let vandal = Endpoint::new();
-    let start = |name, file, handles: alloc::vec::Vec<Capability>| {
-        spawn_program(name, file, handles).unwrap_or_else(|error| panic!("{name}: {error}"))
-    };
-    // Services: they run forever, waiting in `receive`.
-    start(
-        "log",
-        programs::LOG,
-        alloc::vec![Capability::receiver(&log), Capability::Console],
-    );
-    start(
-        "shout",
-        programs::SHOUT,
-        alloc::vec![
-            Capability::sender(&log, "shout"),
-            Capability::receiver(&shout)
-        ],
-    );
-    let vandal_task = start(
-        "vandal",
-        programs::VANDAL,
-        alloc::vec![
-            Capability::sender(&log, "vandal"),
-            Capability::receiver(&vandal)
-        ],
-    );
-    let hello = start(
-        "hello",
-        programs::HELLO,
-        alloc::vec![Capability::sender(&log, "hello")],
-    );
-    let owner = start(
-        "owner",
-        programs::OWNER,
-        alloc::vec![
-            Capability::sender(&log, "owner"),
-            Capability::sender(&shout, "owner"),
-            Capability::sender(&vandal, "owner"),
-        ],
-    );
-    let giver = start(
-        "giver",
-        programs::GIVER,
-        alloc::vec![
-            Capability::sender(&log, "giver"),
-            Capability::sender(&shout, "giver"),
-        ],
-    );
-    let intruder = start(
-        "intruder",
-        programs::INTRUDER,
-        alloc::vec![Capability::sender(&log, "intruder")],
-    );
+/// In the order `init` expects them, after the console (handle 0).
+const PROGRAMS: [(&str, &[u8]); 8] = [
+    ("log", programs::LOG),
+    ("dir", programs::DIRECTORY),
+    ("shout", programs::SHOUT),
+    ("vandal", programs::VANDAL),
+    ("hello", programs::HELLO),
+    ("owner", programs::OWNER),
+    ("giver", programs::GIVER),
+    ("intruder", programs::INTRUDER),
+];
+/// Services that keep running once init is done.
+const SERVICES: usize = 3; // log, dir, shout
 
-    assert_eq!(wait(hello), Exit::Code(0), "hello did not exit cleanly");
-    let owner_exit = wait(owner);
-    assert_eq!(owner_exit, Exit::Code(0), "an ownership check failed");
-    for (name, task) in [
-        ("vandal", vandal_task),
-        ("giver", giver),
-        ("intruder", intruder),
-    ] {
-        let exit = wait(task);
-        assert_eq!(
-            exit,
-            Exit::Killed("Page Fault"),
-            "{name} was not stopped by the page tables: {exit:?}"
-        );
-    }
+pub fn check() {
+    let handles = core::iter::once(Capability::Console).chain(
+        PROGRAMS
+            .iter()
+            .map(|&(name, image)| Capability::Program(ProgramCapability { name, image })),
+    );
+    let init = spawn_program("init", programs::INIT, handles)
+        .unwrap_or_else(|error| panic!("init: {error}"));
+    let exit = wait(init);
+    assert_eq!(exit, Exit::Code(0), "init reports a failed check");
     sleep(2); // let the scheduler free the finished programs
 
-    // Left: boot, an idle task per core, and the two services.
+    // Left: boot, an idle task per core, and the services.
     assert_eq!(
         task_count(),
-        1 + core_count() + 2,
+        1 + core_count() + SERVICES,
         "finished programs were not freed"
     );
-    println!("User mode works: hello printed through the log service and exited with 0.");
-    println!(
-        "Ownership IPC works: &mut lent and returned, & lent and kept safe from a vandal, \
-         a moved page gone from its giver, a forged handle refused."
-    );
+    println!("User space runs itself: init started every program and all its checks passed.");
 }

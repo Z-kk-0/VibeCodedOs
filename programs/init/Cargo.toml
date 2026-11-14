@@ -1,0 +1,8 @@
+[package]
+name = "init"
+version = "0.1.0"
+edition = "2024"
+description = "The first program: starts all others, wires them up, checks how they ended"
+
+[dependencies]
+userlib = { path = "../../userlib" }

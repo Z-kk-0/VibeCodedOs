@@ -1,9 +1,10 @@
-//! Capabilities and ownership IPC (DECISIONS.md, 012 and 020).
+//! Capabilities and ownership IPC (DECISIONS.md, 012, 020 and 021).
 //!
 //! A program can only use what it holds a handle to. Talking is a
 //! synchronous `call` to an endpoint: the caller blocks until a receiver
-//! `reply`s. A message is four words plus at most one handle; data only
-//! travels as memory objects that are moved or lent (`transfer.rs`).
+//! answers through the reply handle that came with the message. A message
+//! is four words plus at most one handle; data only travels as memory
+//! objects that are moved or lent (`transfer.rs`).
 //!
 //! Every operation runs with the scheduler lock held (`task::with_tasks`),
 //! because it touches several tasks at once – caller, receiver, their
@@ -12,25 +13,37 @@
 mod checks;
 mod console;
 mod delivery;
+mod endpoint;
+mod endpoint_calls;
+mod exit;
+mod lending;
 mod memory_calls;
 mod message;
 mod object;
 mod process;
+mod reply;
+mod spawn;
+mod timeouts;
 mod transfer;
 
 pub use checks::check;
+pub use endpoint_calls::{endpoint_new, mint, revoke};
+pub use exit::on_exit;
 pub use memory_calls::{drop_handle, memory_new};
 pub use object::Capability;
 pub use process::Process;
+pub use reply::reply;
+pub use timeouts::expire_timeouts;
 
 use crate::arch::InterruptFrame;
 use crate::task::Tasks;
 use capability::Handle;
 use delivery::{block, deliver, fail_call, saved_frame};
-use message::{Delivery, Message, Received, write_error};
-use object::WaitingCall;
+use endpoint::WaitingCall;
+use message::{Message, write_error};
+use process::Waiting;
 use scheduling::{CoreId, State};
-use transfer::{Phase, end_lend, process, transfer};
+use transfer::{Phase, process};
 
 /// What the system call does next.
 pub enum Next {
@@ -40,65 +53,76 @@ pub enum Next {
     Block,
 }
 
-/// `call(endpoint, attachment, words)`.
+/// `call(object, attachment, words, timeout)`.
 pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next {
     let me = tasks.current_id(core);
-    let result = (|| {
-        let message = Message::from_frame(frame)?;
-        let process = process(tasks, me).map_err(|_| abi::ERROR_WRONG_KIND)?;
-        match process.handles.get(Handle(frame.rdi)) {
-            Some(Capability::Console) => console::write(process, &message).map(|()| None),
-            Some(Capability::Endpoint(endpoint)) => {
-                if let Some(attachment) = message.attachment {
-                    transfer::check(process, attachment, Phase::Call)?;
-                }
-                Ok(Some((endpoint.endpoint.clone(), endpoint.badge, message)))
-            }
-            Some(_) => Err(abi::ERROR_WRONG_KIND),
-            None => Err(abi::ERROR_BAD_HANDLE),
+    let message = match Message::from_frame(frame) {
+        Ok(message) => message,
+        Err(error) => return fail_now(frame, error),
+    };
+    let Ok(process) = process(tasks, me) else {
+        return fail_now(frame, abi::ERROR_WRONG_KIND);
+    };
+    let endpoint = match process.handles.get(Handle(frame.rdi)) {
+        // Kernel objects answer at once.
+        Some(Capability::Console) => {
+            let result = console::write(process, &message);
+            return fail_now(frame, result.err().unwrap_or(0));
         }
-    })();
-    let (endpoint, badge, message) = match result {
-        Ok(Some(call)) => call,
-        Ok(None) => {
-            write_error(frame, 0); // the console answered at once
-            return Next::Continue;
+        Some(Capability::Program(program)) => {
+            let program = *program;
+            return spawn::start(tasks, me, program, &message, frame);
         }
-        Err(error) => {
-            write_error(frame, error);
-            return Next::Continue;
+        Some(&Capability::Child(child)) => return spawn::wait_for(tasks, core, child, frame),
+        Some(Capability::Endpoint(endpoint)) if endpoint.is_revoked() => {
+            return fail_now(frame, abi::ERROR_REVOKED);
         }
+        Some(Capability::Endpoint(endpoint)) => endpoint.clone(),
+        Some(_) => return fail_now(frame, abi::ERROR_WRONG_KIND),
+        None => return fail_now(frame, abi::ERROR_BAD_HANDLE),
+    };
+    if endpoint.endpoint.is_closed() {
+        return fail_now(frame, abi::ERROR_PEER_GONE);
+    }
+    if let Some(attachment) = message.attachment
+        && let Err(error) = transfer::check(process, attachment, Phase::Call)
+    {
+        return fail_now(frame, error);
+    }
+
+    let call = WaitingCall {
+        caller: me,
+        badge: endpoint.badge,
+        message,
     };
     // From now on the reply may come from another core at any moment, so
     // the frame it will be written into must be known first.
-    block(tasks, core, frame);
-    let call = WaitingCall {
-        caller: me,
-        badge,
-        message,
+    let waiting = Waiting::InQueue {
+        endpoint: endpoint.endpoint.clone(),
+        as_caller: true,
+        deadline: timeouts::deadline(frame.rcx),
     };
-    match endpoint.pop_receiver() {
+    block(tasks, core, frame, Some(waiting));
+    match endpoint.endpoint.pop_receiver() {
         Some(receiver) => {
             let receiver_frame = saved_frame(tasks, receiver);
             if let Err((error, _)) = deliver(tasks, call, receiver, receiver_frame) {
-                endpoint.return_receiver(receiver);
-                write_error(frame, error);
-                tasks.set_current_state(core, State::Ready);
+                endpoint.endpoint.return_receiver(receiver);
+                fail_call(tasks, me, error);
                 return Next::Continue;
             }
             tasks.set_state(receiver, State::Ready);
         }
-        None => endpoint.push_caller(call),
+        None => endpoint.endpoint.push_caller(call),
     }
     Next::Block
 }
 
-/// `receive(endpoint)`.
+/// `receive(endpoint, timeout)`.
 pub fn receive(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next {
     let me = tasks.current_id(core);
     let endpoint = match process(tasks, me) {
         Err(_) => Err(abi::ERROR_WRONG_KIND),
-        Ok(process) if process.replying_to.is_some() => Err(abi::ERROR_BUSY),
         Ok(process) => match process.handles.get(Handle(frame.rdi)) {
             Some(Capability::Endpoint(endpoint)) if endpoint.can_receive => {
                 Ok(endpoint.endpoint.clone())
@@ -109,10 +133,7 @@ pub fn receive(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> N
     };
     let endpoint = match endpoint {
         Ok(endpoint) => endpoint,
-        Err(error) => {
-            write_error(frame, error);
-            return Next::Continue;
-        }
+        Err(error) => return fail_now(frame, error),
     };
     while let Some(call) = endpoint.pop_caller() {
         match deliver(tasks, call, me, frame) {
@@ -122,64 +143,18 @@ pub fn receive(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> N
             Err((error, caller)) => fail_call(tasks, caller, error),
         }
     }
-    block(tasks, core, frame);
+    let waiting = Waiting::InQueue {
+        endpoint: endpoint.clone(),
+        as_caller: false,
+        deadline: timeouts::deadline(frame.rcx),
+    };
+    block(tasks, core, frame, Some(waiting));
     endpoint.push_receiver(me);
     Next::Block
 }
 
-/// `reply(attachment, words)`.
-pub fn reply(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next {
-    let me = tasks.current_id(core);
-    let result = (|| {
-        let message = Message::from_frame(frame)?;
-        let process = process(tasks, me).map_err(|_| abi::ERROR_WRONG_KIND)?;
-        if let Some(attachment) = message.attachment {
-            transfer::check(process, attachment, Phase::Reply)?;
-        }
-        let pending = process.replying_to.take().ok_or(abi::ERROR_NO_CALLER)?;
-        if let Some(lend) = pending.lend {
-            end_lend(tasks, pending.caller, me, lend);
-        }
-        let received = match message.attachment {
-            Some(attachment) => transfer(tasks, me, pending.caller, attachment, Phase::Reply)
-                .map(|(received, _)| received),
-            None => Ok(Received::default()),
-        };
-        // SAFETY: see `saved_frame`.
-        let caller_frame = unsafe { &mut *saved_frame(tasks, pending.caller) };
-        tasks.set_state(pending.caller, State::Ready);
-        match received {
-            Ok(received) => {
-                let reply = Delivery {
-                    badge: 0,
-                    words: message.words,
-                    received,
-                };
-                reply.write_to(caller_frame);
-                Ok(())
-            }
-            Err(error) => {
-                write_error(caller_frame, error);
-                Err(error)
-            }
-        }
-    })();
-    write_error(frame, result.err().unwrap_or(0));
+/// Writes `status` (0 = success) and lets the task continue.
+pub(super) fn fail_now(frame: &mut InterruptFrame, status: u64) -> Next {
+    write_error(frame, status);
     Next::Continue
-}
-
-/// A program is ending (exit or fault). If it owed a reply, its caller gets
-/// lent memory back and `ERROR_PEER_GONE`. Its own memory is freed later,
-/// together with the task.
-pub fn on_exit(tasks: &mut Tasks, core: CoreId) {
-    let me = tasks.current_id(core);
-    let Ok(process) = process(tasks, me) else {
-        return;
-    };
-    if let Some(pending) = process.replying_to.take() {
-        if let Some(lend) = pending.lend {
-            end_lend(tasks, pending.caller, me, lend);
-        }
-        fail_call(tasks, pending.caller, abi::ERROR_PEER_GONE);
-    }
 }

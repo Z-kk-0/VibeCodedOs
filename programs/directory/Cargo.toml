@@ -1,0 +1,8 @@
+[package]
+name = "directory"
+version = "0.1.0"
+edition = "2024"
+description = "The directory service: services register under a name, others look them up"
+
+[dependencies]
+userlib = { path = "../../userlib" }

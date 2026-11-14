@@ -14,8 +14,8 @@ mod switch;
 
 pub use checks::check;
 pub use context::TaskContext;
-pub use exits::{Exit, wait};
-pub use program::spawn_program;
+pub use exits::{Exit, exit_of, wait};
+pub use program::{load_program, spawn_program};
 pub use switch::switch;
 
 use crate::arch::{self, InterruptFrame, cpu};
@@ -100,7 +100,7 @@ pub fn with_tasks<R>(action: impl FnOnce(&mut Tasks, CoreId) -> R) -> R {
 pub fn end_current(frame: *mut InterruptFrame, exit: Exit) -> *mut InterruptFrame {
     with_scheduler(|scheduler, core| {
         // A program that owed a reply hands lent memory back first.
-        crate::ipc::on_exit(scheduler, core);
+        crate::ipc::on_exit(scheduler, core, exit);
         exits::record(scheduler.current_id(core), exit);
         scheduler.set_current_state(core, State::Exited);
     });

@@ -31,6 +31,18 @@ pub fn spawn_program(
     file: &[u8],
     handles: impl IntoIterator<Item = Capability>,
 ) -> Result<TaskId, Error> {
+    let mut context = load_program(name, file)?;
+    let process = context.process.as_mut().expect("a program has a process");
+    for capability in handles {
+        process.handles.insert(capability);
+    }
+    Ok(spawn_context(context))
+}
+
+/// Loads `file` as a user program with no handles yet, ready to be
+/// scheduled – without taking the scheduler lock, so IPC (which holds it)
+/// can start programs too.
+pub fn load_program(name: &'static str, file: &[u8]) -> Result<TaskContext, Error> {
     let elf = ElfFile::parse(file)?;
     let span = elf.load_span()?;
     let mut image = vec![0u8; (span.end - span.start) as usize];
@@ -59,12 +71,12 @@ pub fn spawn_program(
     // At the entry point the ABI expects rsp + 8 to be 16-byte aligned, as
     // right after a `call`.
     let stack_pointer = STACK_TOP - 8;
-    Ok(spawn_context(TaskContext::new_user(
+    Ok(TaskContext::new_user(
         name,
         entry,
         stack_pointer,
-        Process::new(space, handles),
-    )))
+        Process::new(space, []),
+    ))
 }
 
 /// Maps one page of the loaded image. A page that two segments share is

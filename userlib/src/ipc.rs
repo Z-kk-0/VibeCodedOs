@@ -1,6 +1,7 @@
-//! Handles, memory objects and messages (DECISIONS.md, 020).
+//! Handles and messages (DECISIONS.md, 020 and 021).
 
-use crate::memory::{Borrowed, Memory, ReceivedMemory};
+use crate::memory::Memory;
+use crate::message::{Received, Reply, decode};
 use crate::system_call::{Registers, system_call};
 use core::fmt;
 
@@ -19,12 +20,14 @@ impl Error {
             abi::ERROR_BAD_HANDLE => "bad handle",
             abi::ERROR_WRONG_KIND => "wrong kind of object",
             abi::ERROR_BUSY => "busy",
-            abi::ERROR_NO_CALLER => "no caller to reply to",
+            abi::ERROR_BAD_PROGRAM => "broken program",
             abi::ERROR_PEER_GONE => "the other side is gone",
             abi::ERROR_OUT_OF_MEMORY => "out of memory",
             abi::ERROR_TOO_LONG => "too long",
             abi::ERROR_NOT_UTF8 => "not UTF-8",
             abi::ERROR_BAD_MODE => "bad attach mode",
+            abi::ERROR_TIMED_OUT => "timed out",
+            abi::ERROR_REVOKED => "revoked",
             _ => "unknown error",
         }
     }
@@ -36,23 +39,14 @@ impl fmt::Debug for Error {
     }
 }
 
-/// A message (or a reply).
-pub struct Received {
-    /// Who sent it: the badge of their handle (the kernel uses program names).
-    pub badge: u64,
-    pub words: [u64; 4],
-    /// An endpoint handle that came with it.
-    pub handle: Option<Handle>,
-    pub memory: Option<ReceivedMemory>,
-}
-
 /// What goes with a message. Lending borrows the memory for the call –
 /// exactly the time the kernel takes it away from us.
 pub enum Attach<'a> {
     Nothing,
-    /// Gives the receiver a sending handle to the same endpoint.
-    CopyEndpoint(Handle),
-    MoveEndpoint(Handle),
+    /// A copy: endpoints (as a sending end) and programs.
+    Copy(Handle),
+    /// Any handle but memory: the receiver gets it, we lose it.
+    MoveHandle(Handle),
     /// The memory becomes the receiver's (if the call fails, it is freed).
     Move(Memory),
     Lend(&'a Memory),
@@ -60,59 +54,81 @@ pub enum Attach<'a> {
 }
 
 impl Attach<'_> {
-    fn encode(self) -> (u64, u64) {
+    pub(crate) fn encode(self) -> (u64, u64) {
         match self {
             Attach::Nothing => (abi::NO_HANDLE, abi::ATTACH_NONE),
-            Attach::CopyEndpoint(handle) => (handle.0, abi::ATTACH_COPY),
-            Attach::MoveEndpoint(handle) => (handle.0, abi::ATTACH_MOVE),
-            Attach::Move(memory) => {
-                let handle = memory.handle;
-                core::mem::forget(memory); // the kernel hands it over, not we
-                (handle.0, abi::ATTACH_MOVE)
-            }
-            Attach::Lend(memory) => (memory.handle.0, abi::ATTACH_LEND_SHARED),
-            Attach::LendMut(memory) => (memory.handle.0, abi::ATTACH_LEND_EXCLUSIVE),
+            Attach::Copy(handle) => (handle.0, abi::ATTACH_COPY),
+            Attach::MoveHandle(handle) => (handle.0, abi::ATTACH_MOVE),
+            Attach::Move(memory) => (memory.into_handle().0, abi::ATTACH_MOVE),
+            Attach::Lend(memory) => (memory.handle().0, abi::ATTACH_LEND_SHARED),
+            Attach::LendMut(memory) => (memory.handle().0, abi::ATTACH_LEND_EXCLUSIVE),
         }
     }
 }
 
-/// Sends a message to `endpoint` and waits for the reply.
-pub fn call(endpoint: Handle, attach: Attach, words: [u64; 4]) -> Result<Received, Error> {
+/// Sends a message and waits for the reply. Also how kernel objects are
+/// used: the console, programs (`spawn`), children (`wait`).
+pub fn call(object: Handle, attach: Attach, words: [u64; 4]) -> Result<Received, Error> {
+    call_timeout(object, attach, words, 0)
+}
+
+/// `call`, but gives up with `ERROR_TIMED_OUT` if no receiver takes it
+/// within `ticks` (once taken, it waits for the reply).
+pub fn call_timeout(
+    object: Handle,
+    attach: Attach,
+    words: [u64; 4],
+    ticks: u64,
+) -> Result<Received, Error> {
     let (handle, mode) = attach.encode();
     let result = system_call(Registers {
         rax: abi::CALL,
-        rdi: endpoint.0,
+        rdi: object.0,
         rsi: handle,
         rdx: mode,
+        rcx: ticks,
         ..with_words(words)
     });
-    decode(result)
+    decode(result, false)
 }
 
-/// Waits for the next message on `endpoint` (which we must be able to
-/// receive on). Answer it with `reply` before receiving the next one.
+/// Waits for the next message on `endpoint` (a receiving end).
 pub fn receive(endpoint: Handle) -> Result<Received, Error> {
+    receive_timeout(endpoint, 0)
+}
+
+/// `receive`, but gives up with `ERROR_TIMED_OUT` after `ticks`.
+pub fn receive_timeout(endpoint: Handle, ticks: u64) -> Result<Received, Error> {
     let result = system_call(Registers {
         rax: abi::RECEIVE,
         rdi: endpoint.0,
+        rcx: ticks,
         ..Registers::default()
     });
-    decode(result)
+    decode(result, true)
 }
 
-/// Answers the last received message. Borrowed memory goes back now.
-pub fn reply(attach: Attach, words: [u64; 4]) -> Result<(), Error> {
+/// Answers a call. Borrowed memory goes back now. If the reply fails (a
+/// bad attachment), the duty is given up: the caller hears the other side
+/// is gone.
+pub fn reply(reply: Reply, attach: Attach, words: [u64; 4]) -> Result<(), Error> {
     let (handle, mode) = attach.encode();
     let result = system_call(Registers {
         rax: abi::REPLY,
+        rdi: reply.0.0,
         rsi: handle,
         rdx: mode,
         ..with_words(words)
     });
-    check(result.rax)
+    let outcome = check(result.rax);
+    if outcome.is_ok() {
+        core::mem::forget(reply); // used up by the kernel
+    }
+    outcome
 }
 
-pub(crate) fn drop_handle(handle: Handle) {
+/// Gives a handle up (memory: freed; reply: the caller is told).
+pub fn drop_handle(handle: Handle) {
     system_call(Registers {
         rax: abi::DROP,
         rdi: handle.0,
@@ -120,7 +136,7 @@ pub(crate) fn drop_handle(handle: Handle) {
     });
 }
 
-fn with_words([r10, r8, r9, r12]: [u64; 4]) -> Registers {
+pub(crate) fn with_words([r10, r8, r9, r12]: [u64; 4]) -> Registers {
     Registers {
         r10,
         r8,
@@ -138,37 +154,6 @@ pub(crate) fn check(status: u64) -> Result<(), Error> {
     }
 }
 
-fn decode(result: Registers) -> Result<Received, Error> {
-    check(result.rax)?;
-    let handle = (result.rsi != abi::NO_HANDLE).then_some(Handle(result.rsi));
-    let mut received = Received {
-        badge: result.rdi,
-        words: [result.r10, result.r8, result.r9, result.r12],
-        handle,
-        memory: None,
-    };
-    if result.rdx != 0 {
-        let (address, pages) = (result.rdx as *mut u8, result.rcx & 0xFFFF_FFFF);
-        let borrowed = |exclusive| Borrowed {
-            address,
-            pages,
-            exclusive,
-        };
-        received.memory = match result.rcx >> 32 {
-            abi::ACCESS_OWNED => Some(ReceivedMemory::Owned(Memory {
-                handle: received.handle.take().expect("memory comes with a handle"),
-                address,
-                pages,
-            })),
-            abi::ACCESS_SHARED => Some(ReceivedMemory::Shared(borrowed(false))),
-            _ => Some(ReceivedMemory::Exclusive(borrowed(true))),
-        };
-        // Borrowed memory's handle is the kernel's business: it goes with the reply.
-        received.handle = None;
-    }
-    Ok(received)
-}
-
 /// `call` with a raw handle and mode – for `println!`, whose page lives in
 /// a static and isn't a `Memory` value.
 pub(crate) fn call_raw(
@@ -184,5 +169,5 @@ pub(crate) fn call_raw(
         rdx: mode,
         ..with_words(words)
     });
-    decode(result)
+    decode(result, false)
 }

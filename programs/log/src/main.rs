@@ -21,11 +21,14 @@ extern "C" fn _start() -> ! {
         exit(1)
     };
     loop {
-        let status = match receive(REQUESTS) {
-            Ok(request) => print(&mut page, &request).map_or_else(|error| error.0, |()| 0),
-            Err(_) => continue,
+        let Ok(mut request) = receive(REQUESTS) else {
+            continue;
         };
-        let _ = reply(Attach::Nothing, [status, 0, 0, 0]);
+        let Some(answer) = request.reply.take() else {
+            continue;
+        };
+        let status = print(&mut page, &request).map_or_else(|error| error.0, |()| 0);
+        let _ = reply(answer, Attach::Nothing, [status, 0, 0, 0]);
     }
 }
 

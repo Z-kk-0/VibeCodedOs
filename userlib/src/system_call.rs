@@ -14,6 +14,7 @@ pub struct Registers {
     pub r8: u64,
     pub r9: u64,
     pub r12: u64,
+    pub r13: u64,
 }
 
 pub fn system_call(input: Registers) -> Registers {
@@ -33,6 +34,7 @@ pub fn system_call(input: Registers) -> Registers {
             inlateout("r8") registers.r8,
             inlateout("r9") registers.r9,
             inlateout("r12") registers.r12,
+            inlateout("r13") registers.r13,
             options(nostack, preserves_flags),
         );
     }

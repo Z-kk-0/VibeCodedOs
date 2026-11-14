@@ -8,7 +8,9 @@ macro_rules! program {
     };
 }
 
+program!(INIT, "init");
 program!(LOG, "log");
+program!(DIRECTORY, "directory");
 program!(SHOUT, "shout");
 program!(VANDAL, "vandal");
 program!(HELLO, "hello");

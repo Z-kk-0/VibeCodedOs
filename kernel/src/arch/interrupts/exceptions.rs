@@ -34,7 +34,7 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                 frame.rip
             );
         }
-        return task::end_current(frame, Exit::Killed(self::name(vector)));
+        return task::end_current(frame, Exit::Killed(vector));
     }
     arch::stop_other_cores();
     report(frame);

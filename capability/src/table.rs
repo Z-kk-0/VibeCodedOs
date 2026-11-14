@@ -92,6 +92,19 @@ impl<T> HandleTable<T> {
         }
     }
 
+    /// Takes out every value `matches` picks (their handles die) and
+    /// returns them, e.g. all reply handles of a program that ends.
+    pub fn extract(&mut self, mut matches: impl FnMut(&T) -> bool) -> Vec<T> {
+        let mut taken = Vec::new();
+        for slot in &mut self.slots {
+            if slot.value.as_ref().is_some_and(&mut matches) {
+                taken.extend(slot.value.take());
+                slot.generation = slot.generation.wrapping_add(1);
+            }
+        }
+        taken
+    }
+
     pub fn len(&self) -> usize {
         self.slots
             .iter()
@@ -136,6 +149,18 @@ mod tests {
         assert_eq!(table.get(Handle(7)), None);
         assert_eq!(table.get(Handle(1 << 32)), None); // right slot, wrong generation
         assert_eq!(table.get_mut(Handle(u64::MAX)), None);
+    }
+
+    #[test]
+    fn extract_takes_only_what_matches() {
+        let mut table = HandleTable::new();
+        let one = table.insert(1);
+        let two = table.insert(2);
+        let three = table.insert(3);
+        assert_eq!(table.extract(|value| value % 2 == 1), [1, 3]);
+        assert_eq!(table.get(one), None);
+        assert_eq!(table.get(three), None);
+        assert_eq!(table.get(two), Some(&2));
     }
 
     #[test]

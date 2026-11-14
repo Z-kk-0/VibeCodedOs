@@ -9,23 +9,30 @@
 
 #![no_std]
 
+pub mod directory;
+mod endpoint;
 mod ipc;
 mod memory;
+mod message;
 // Public only because `println!` expands to code that uses it.
 #[doc(hidden)]
 pub mod print;
+mod program;
 mod system_call;
 
-pub use ipc::{Attach, Error, Handle, Received, call, receive, reply};
+pub use endpoint::{endpoint_new, mint, revoke};
+pub use ipc::{
+    Attach, Error, Handle, call, call_timeout, drop_handle, receive, receive_timeout, reply,
+};
 pub use memory::{Borrowed, Memory, ReceivedMemory};
+pub use message::{Received, Reply};
+pub use print::set_log;
+pub use program::{Ended, Pass, spawn, wait};
 
 /// The system call numbers and error codes, for programs that need them.
 pub use abi;
 
 use system_call::{Registers, system_call};
-
-/// Every program but `log` itself starts with this handle: the log service.
-pub const LOG: Handle = Handle(0);
 
 /// Pauses for at least `ticks` timer ticks (10 ms each).
 pub fn sleep(ticks: u64) {

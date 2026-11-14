@@ -1,5 +1,6 @@
 //! The memory system calls: making a memory object and giving a handle up.
 
+use super::delivery::{fail_reply, release_receiving_end};
 use super::message::{Delivery, Received, write_error};
 use super::object::{self, Capability, OwnedMemory};
 use super::transfer::process;
@@ -36,34 +37,47 @@ pub fn memory_new(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
             badge: 0,
             words: [0; 4],
             received,
+            reply: None,
         }
         .write_to(frame),
         Err(error) => write_error(frame, error),
     }
 }
 
-/// `drop(handle)`.
+/// `drop(handle)`. Giving up a reply handle tells its caller; giving up
+/// the last receiving end closes the endpoint.
 pub fn drop_handle(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
     let me = tasks.current_id(core);
-    let result = process(tasks, me)
+    let handle = Handle(frame.rdi);
+    let removed = process(tasks, me)
         .map_err(|_| abi::ERROR_WRONG_KIND)
         .and_then(|process| {
-            let handle = Handle(frame.rdi);
             match process.handles.get(handle) {
                 None => return Err(abi::ERROR_BAD_HANDLE),
                 Some(Capability::Memory(owned)) if owned.lent => return Err(abi::ERROR_BUSY),
                 Some(_) => {}
             }
-            match process.handles.remove(handle) {
-                Some(Capability::Memory(owned)) => {
+            let removed = process.handles.remove(handle).expect("checked above");
+            match &removed {
+                Capability::Memory(owned) => {
                     process.unmap_pages(owned.address, owned.memory.pages() as usize);
                 }
-                Some(Capability::Borrowed(borrowed)) => {
+                Capability::Borrowed(borrowed) => {
                     process.unmap_pages(borrowed.address, borrowed.frames.len());
                 }
                 _ => {}
             }
-            Ok(())
+            Ok(removed)
         });
-    write_error(frame, result.err().unwrap_or(0));
+    let status = removed_status(&removed);
+    match removed {
+        Ok(Capability::Reply(reply)) => fail_reply(tasks, reply, abi::ERROR_PEER_GONE),
+        Ok(Capability::Endpoint(end)) if end.can_receive => release_receiving_end(tasks, end),
+        _ => {}
+    }
+    write_error(frame, status);
+}
+
+fn removed_status<T>(removed: &Result<T, u64>) -> u64 {
+    removed.as_ref().err().copied().unwrap_or(0)
 }

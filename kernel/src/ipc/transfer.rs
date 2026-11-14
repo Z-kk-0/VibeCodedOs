@@ -7,29 +7,35 @@
 //! | lend shared `&` | read-only              | read-only          | with the reply  |
 //! | lend `&mut`     | gone                   | writable           | with the reply  |
 //!
+//! Other objects can be moved (endpoints, the console, reply handles,
+//! programs, children); endpoints and programs can also be copied.
 //! Everything that can fail (mapping into the receiver) happens before the
 //! sender's side changes, so a failed transfer leaves both as they were.
 
+use super::lending::take_from_sender;
 use super::message::{Attachment, Mode, Received};
-use super::object::{BorrowedMemory, Capability, EndpointCapability, OwnedMemory};
-use super::process::{Lend, Process};
+use super::object::{Capability, Lend};
+use super::process::Process;
 use crate::task::Tasks;
-use paging::PAGE_SIZE;
+use alloc::vec::Vec;
 use scheduling::TaskId;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     /// Lending is allowed: the borrow ends with the reply.
     Call,
-    /// A reply can't lend – nothing would end the borrow.
-    Reply,
+    /// A reply (or a program start) can't lend – nothing would end the borrow.
+    NoLending,
 }
 
 /// What the attachment is, checked against the rules but not yet changed.
 enum Plan {
-    Endpoint(EndpointCapability),
+    /// Take the capability out of the sender and give it as it is.
+    Move,
+    /// Give this new capability; the sender keeps its own.
+    Copy(Capability),
     Memory {
-        frames: alloc::vec::Vec<u64>,
+        frames: Vec<u64>,
         receiver_writable: bool,
         access: u64,
     },
@@ -46,21 +52,12 @@ fn plan(process: &Process, attachment: Attachment, phase: Phase) -> Result<Plan,
         .get(attachment.handle)
         .ok_or(abi::ERROR_BAD_HANDLE)?;
     let mode = attachment.mode;
-    if mode.is_lend() && phase == Phase::Reply {
+    if mode.is_lend() && phase == Phase::NoLending {
         return Err(abi::ERROR_WRONG_KIND);
     }
-    match capability {
-        Capability::Endpoint(endpoint) => match mode {
-            // A copy is always a sending end: there is one receiving end.
-            Mode::Copy => Ok(Plan::Endpoint(EndpointCapability {
-                can_receive: false,
-                ..endpoint.clone()
-            })),
-            Mode::Move => Ok(Plan::Endpoint(endpoint.clone())),
-            Mode::LendShared | Mode::LendExclusive => Err(abi::ERROR_WRONG_KIND),
-        },
-        Capability::Memory(owned) if owned.lent => Err(abi::ERROR_BUSY),
-        Capability::Memory(owned) => {
+    match (capability, mode) {
+        (Capability::Memory(owned), _) if owned.lent => Err(abi::ERROR_BUSY),
+        (Capability::Memory(owned), _) => {
             let (receiver_writable, access) = match mode {
                 Mode::Copy => return Err(abi::ERROR_WRONG_KIND), // memory has one owner
                 Mode::Move => (true, abi::ACCESS_OWNED),
@@ -73,8 +70,39 @@ fn plan(process: &Process, attachment: Attachment, phase: Phase) -> Result<Plan,
                 access,
             })
         }
-        // Borrowed memory isn't ours to pass on; the console isn't either.
-        Capability::Borrowed(_) | Capability::Console => Err(abi::ERROR_WRONG_KIND),
+        // Borrowed memory isn't ours to pass on.
+        (Capability::Borrowed(_), _) => Err(abi::ERROR_WRONG_KIND),
+        (Capability::Endpoint(endpoint), Mode::Copy) if endpoint.is_revoked() => {
+            Err(abi::ERROR_REVOKED)
+        }
+        (Capability::Endpoint(endpoint), Mode::Copy) => {
+            Ok(Plan::Copy(Capability::Endpoint(endpoint.copy())))
+        }
+        (Capability::Program(program), Mode::Copy) => Ok(Plan::Copy(Capability::Program(*program))),
+        (_, Mode::Copy) => Err(abi::ERROR_WRONG_KIND), // one console, one reply, one child
+        (_, Mode::Move) => Ok(Plan::Move),
+        (_, Mode::LendShared | Mode::LendExclusive) => Err(abi::ERROR_WRONG_KIND),
+    }
+}
+
+/// Takes a capability out of `process` for a program it starts (no
+/// mapping involved, so memory can't go this way). Check all first with
+/// `check_for_child`.
+pub fn take_for_child(process: &mut Process, attachment: Attachment) -> Result<Capability, u64> {
+    match plan(process, attachment, Phase::NoLending)? {
+        Plan::Move => process
+            .handles
+            .remove(attachment.handle)
+            .ok_or(abi::ERROR_BAD_HANDLE),
+        Plan::Copy(capability) => Ok(capability),
+        Plan::Memory { .. } => Err(abi::ERROR_WRONG_KIND),
+    }
+}
+
+pub fn check_for_child(process: &Process, attachment: Attachment) -> Result<(), u64> {
+    match plan(process, attachment, Phase::NoLending)? {
+        Plan::Memory { .. } => Err(abi::ERROR_WRONG_KIND),
+        _ => Ok(()),
     }
 }
 
@@ -88,113 +116,48 @@ pub fn transfer(
     phase: Phase,
 ) -> Result<(Received, Option<Lend>), u64> {
     let handle = attachment.handle;
-    match plan(process(tasks, from)?, attachment, phase)? {
-        Plan::Endpoint(endpoint) => {
-            if attachment.mode == Mode::Move {
-                process(tasks, from)?.handles.remove(handle);
-            }
-            let received = process(tasks, to)?
+    let (frames, receiver_writable, access) = match plan(process(tasks, from)?, attachment, phase)?
+    {
+        Plan::Move => {
+            let capability = process(tasks, from)?
                 .handles
-                .insert(Capability::Endpoint(endpoint));
-            Ok((
-                Received {
-                    handle: Some(received),
-                    memory: None,
-                },
-                None,
-            ))
+                .remove(handle)
+                .ok_or(abi::ERROR_BAD_HANDLE)?;
+            return Ok((give(tasks, to, capability)?, None));
         }
+        Plan::Copy(capability) => return Ok((give(tasks, to, capability)?, None)),
         Plan::Memory {
             frames,
             receiver_writable,
             access,
-        } => {
-            let address = process(tasks, to)?
-                .map_frames(&frames, receiver_writable)
-                .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
-            let pages = frames.len() as u64;
-            let capability = take_from_sender(process(tasks, from)?, attachment, frames, address);
-            let received = process(tasks, to)?.handles.insert(capability);
-            let lend = attachment.mode.is_lend().then_some(Lend {
-                lender: handle,
-                borrower: received,
-            });
-            Ok((
-                Received {
-                    handle: Some(received),
-                    memory: Some((address, pages, access)),
-                },
-                lend,
-            ))
-        }
-    }
-}
-
-/// The sender's half of a memory transfer (checked by `plan` already):
-/// returns the capability the receiver gets, mapped at `address`.
-fn take_from_sender(
-    sender: &mut Process,
-    attachment: Attachment,
-    frames: alloc::vec::Vec<u64>,
-    address: u64,
-) -> Capability {
-    let handle = attachment.handle;
-    if attachment.mode == Mode::Move {
-        let Some(Capability::Memory(owned)) = sender.handles.remove(handle) else {
-            unreachable!("checked by plan()");
-        };
-        sender.unmap_pages(owned.address, frames.len());
-        return Capability::Memory(OwnedMemory {
-            memory: owned.memory,
-            address,
-            lent: false,
-        });
-    }
-    let Some(Capability::Memory(owned)) = sender.handles.get_mut(handle) else {
-        unreachable!("checked by plan()");
+        } => (frames, receiver_writable, access),
     };
-    owned.lent = true;
-    let own_address = owned.address;
-    let exclusive = attachment.mode == Mode::LendExclusive;
-    if exclusive {
-        sender.unmap_pages(own_address, frames.len()); // &mut: the owner can't look
-    } else {
-        sender.remap_frames(own_address, &frames, false); // &: nobody can write
-    }
-    // The lender is blocked in `call` and can't try for itself, so the
-    // kernel checks its own work: the rule must hold in the page tables.
-    for page in (own_address..)
-        .step_by(PAGE_SIZE as usize)
-        .take(frames.len())
-    {
-        let translation = sender.space.translate(page);
-        assert!(
-            if exclusive {
-                translation.is_none()
-            } else {
-                translation.is_some_and(|translation| !translation.flags.writable)
-            },
-            "lent memory still accessible to its lender at {page:#x}"
-        );
-    }
-    Capability::Borrowed(BorrowedMemory { frames, address })
+    let address = process(tasks, to)?
+        .map_frames(&frames, receiver_writable)
+        .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
+    let pages = frames.len() as u64;
+    let capability = take_from_sender(process(tasks, from)?, attachment, frames, address);
+    let received = process(tasks, to)?.handles.insert(capability);
+    let lend = attachment.mode.is_lend().then_some(Lend {
+        lender: handle,
+        borrower_task: to,
+        borrower: received,
+    });
+    Ok((
+        Received {
+            handle: Some(received),
+            memory: Some((address, pages, access)),
+        },
+        lend,
+    ))
 }
 
-/// Ends a borrow: the borrower loses the memory, the lender gets it back
-/// with full access. Either side may be gone already.
-pub fn end_lend(tasks: &mut Tasks, lender: TaskId, borrower: TaskId, lend: Lend) {
-    if let Ok(borrower) = process(tasks, borrower)
-        && let Some(Capability::Borrowed(borrowed)) = borrower.handles.remove(lend.borrower)
-    {
-        borrower.unmap_pages(borrowed.address, borrowed.frames.len());
-    }
-    if let Ok(lender) = process(tasks, lender)
-        && let Some(Capability::Memory(owned)) = lender.handles.get_mut(lend.lender)
-    {
-        owned.lent = false;
-        let (address, frames) = (owned.address, owned.memory.frames());
-        lender.remap_frames(address, &frames, true);
-    }
+fn give(tasks: &mut Tasks, to: TaskId, capability: Capability) -> Result<Received, u64> {
+    let handle = process(tasks, to)?.handles.insert(capability);
+    Ok(Received {
+        handle: Some(handle),
+        memory: None,
+    })
 }
 
 /// The process of task `id`; `ERROR_PEER_GONE` if it ended (or is a kernel task).
@@ -203,4 +166,9 @@ pub fn process(tasks: &mut Tasks, id: TaskId) -> Result<&mut Process, u64> {
         .task_mut(id)
         .and_then(|task| task.process.as_mut())
         .ok_or(abi::ERROR_PEER_GONE)
+}
+
+/// For messages without attachment.
+pub fn nothing() -> (Received, Option<Lend>) {
+    (Received::default(), None)
 }

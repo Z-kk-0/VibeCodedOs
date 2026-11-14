@@ -2,20 +2,33 @@
 //! (the caller gets it back with the reply) or moved to it (then it is
 //! shout's, and freed afterwards). Proof that `&mut` lending works.
 //!
-//! Handles: 0 = log, 1 = the shout endpoint (receive).
+//! Makes its own endpoint and registers it in the directory as "shout" –
+//! clients find it there (DECISIONS.md, 021).
+//!
+//! Handles: 0 = log, 1 = directory.
 //! Message: word 0 = text length. Reply: word 0 = 0 or an error code.
 
 #![no_std]
 #![no_main]
 
-use userlib::{Attach, Handle, ReceivedMemory, abi, println, receive, reply};
+use userlib::{Attach, Handle, ReceivedMemory, abi, directory, endpoint_new, exit, println};
+use userlib::{receive, reply};
 
-const REQUESTS: Handle = Handle(1);
+const DIRECTORY: Handle = Handle(1);
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
+    let Ok(requests) = endpoint_new() else {
+        exit(1)
+    };
+    if directory::register(DIRECTORY, "shout", requests).is_err() {
+        exit(2);
+    }
     loop {
-        let Ok(mut request) = receive(REQUESTS) else {
+        let Ok(mut request) = receive(requests) else {
+            continue;
+        };
+        let Some(answer) = request.reply.take() else {
             continue;
         };
         let length = request.words[0] as usize;
@@ -26,16 +39,14 @@ extern "C" fn _start() -> ! {
             },
             Some(ReceivedMemory::Owned(text)) => {
                 let status = shout(text.bytes_mut(), length);
-                let name = abi::name_from_badge(request.badge);
-                let name = core::str::from_utf8(name.as_bytes()).unwrap_or("?");
-                println!("{name} gave me a page for good - shouted into it, now it is mine.");
+                println!("Someone gave me a page for good - shouted into it, now it is mine.");
                 status
             }
             // Shouting needs to write: a shared borrow won't do.
             Some(ReceivedMemory::Shared(_)) | None => abi::ERROR_WRONG_KIND,
         };
         drop(request); // a moved page is freed here
-        let _ = reply(Attach::Nothing, [status, 0, 0, 0]);
+        let _ = reply(answer, Attach::Nothing, [status, 0, 0, 0]);
     }
 }
 

@@ -27,6 +27,18 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             task::with_tasks(|tasks, core| ipc::drop_handle(tasks, core, frame));
             Next::Continue
         }
+        abi::ENDPOINT_NEW => {
+            task::with_tasks(|tasks, core| ipc::endpoint_new(tasks, core, frame));
+            Next::Continue
+        }
+        abi::MINT => {
+            task::with_tasks(|tasks, core| ipc::mint(tasks, core, frame));
+            Next::Continue
+        }
+        abi::REVOKE => {
+            task::with_tasks(|tasks, core| ipc::revoke(tasks, core, frame));
+            Next::Continue
+        }
         _ => {
             frame.rax = abi::ERROR_UNKNOWN_CALL;
             Next::Continue

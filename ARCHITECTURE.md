@@ -46,10 +46,12 @@ UEFI firmware (OVMF in QEMU)
               ├─ task::check: 4 busy tasks + 1 sleeper must interleave,
               │  on more than one core; freeing their stacks must have
               │  sent TLB shootdowns                                     task/checks.rs
-              ├─ ipc::check: services log + shout, programs hello,       kernel/src/ipc/checks.rs,
-              │  owner, giver, vandal, intruder – each with its handles   programs/
-              │  hello, owner exit 0; giver, vandal, intruder stopped;
-              │  their address spaces freed, the services keep running
+              ├─ ipc::check: starts only `init` (console + 8 Program     kernel/src/ipc/checks.rs
+              │  handles), waits for its exit code                       programs/init
+              │    init: endpoints, badged sending ends, starts log,
+              │    dir, vandal, hello, owner, giver, shout, intruder;
+              │    checks how each test program ended → exit 0 / n
+              │  afterwards: log, dir, shout keep running, the rest freed
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ heartbeat: boot task sleeps 10 s at a time; idle tasks run hlt
 ```
@@ -94,23 +96,30 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 | `0xFF` | APIC spurious interrupt |
 
 System calls (`abi` crate, register table there): `int 0x80`, number in `rax`. `exit`, `sleep`,
-and the capability calls (DECISIONS 020): `call`, `receive`, `reply`, `memory_new`, `drop`.
+and the capability calls (DECISIONS 020, 021): `call`, `receive`, `reply`, `memory_new`, `drop`,
+`endpoint_new`, `mint`, `revoke`. Kernel objects answer `call` at once: the console prints, a
+`Program` starts a process, a `Child` says how it ended.
 Programs use `userlib` (typed wrappers, `println!` via the `log` service, panic handler).
 
-Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020): each process (`ipc/process.rs`) has an
-address space, a handle table and the call it still has to answer. A message is four words plus
-at most one handle, moved between the tasks' saved frames under the scheduler lock. Memory objects
-change hands by the rules in `ipc/transfer.rs`: move (sender loses the mapping), lend `&` (read-only
-for both), lend `&mut` (lender loses the mapping) – borrows end with the reply.
+Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020, 021): each process (`ipc/process.rs`) has
+an address space, a handle table and what it waits for. A message is four words plus at most one
+handle, moved between the tasks' saved frames under the scheduler lock; every received message
+comes with a one-shot reply handle. Memory objects change hands by the rules in `ipc/transfer.rs`:
+move (sender loses the mapping), lend `&` (read-only for both), lend `&mut` (lender loses the
+mapping) – a borrow ends with its reply handle. Endpoints (`ipc/endpoint.rs`) close when their
+last receiving end is gone and keep a generation per badge for `revoke`; queue waits can time out
+(`ipc/timeouts.rs`). The kernel starts only `init`, which wires everything else up.
 
 | Program | Kind | Handles it starts with | What it proves |
 |---|---|---|---|
+| `init` | first program | 0 console, 1–8 programs | user space wires itself up |
 | `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
-| `shout` | service | 0 log, 1 shout endpoint (receive) | `&mut` borrow and move work |
+| `dir` (`directory`) | service | 0 log, 1 directory endpoint (receive) | names; parked lookups (reply handles) |
+| `shout` | service | 0 log, 1 directory (registers itself) | `&mut` borrow and move work |
 | `vandal` | attacker | 0 log, 1 vandal endpoint (receive) | writing into a `&` borrow faults |
 | `hello` | program | 0 log | printing through `log` |
-| `owner` | program | 0 log, 1 shout, 2 vandal | lent memory comes back intact |
-| `giver` | attacker | 0 log, 1 shout | a moved page is gone |
+| `owner` | program | 0 log, 1 directory, 2 vandal | lent memory comes back; closed endpoints, timeouts, revoke |
+| `giver` | attacker | 0 log, 1 directory | a moved page is gone |
 | `intruder` | attacker | 0 log | forged handles and kernel reads fail |
 
 ## Crates
@@ -155,6 +164,8 @@ Done:
       GDT/TSS/timer/idle task, TLB shootdown via IPIs (DECISIONS 019)
 - [x] Capabilities + ownership IPC: handle tables, endpoints, `call`/`receive`/`reply`, memory
       moved or lent `&`/`&mut` – enforced by the page tables; `log` service (DECISIONS 020)
+- [x] IPC without limits: reply handles, closed endpoints, timeouts, revoke per badge; `init`
+      starts and wires up everything in user space, `directory` service (DECISIONS 021)
 
 Next, in order (each one a milestone with its own decision entry):
 1. **Framebuffer** (UEFI GOP) – Hematite gets a screen. Design with the owner first: probably the
@@ -172,11 +183,10 @@ Next, in order (each one a milestone with its own decision entry):
   priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task still
   stops the whole machine (in user programs it only ends the program).
 - Programs: one task per program, fixed 16 KiB stack, no heap (but memory objects), embedded in
-  the kernel. Handles are wired up at boot in `ipc/checks.rs`; there is no way yet to start a
-  program or look up a service at run time.
-- IPC (DECISIONS 020): one call at a time per server; no timeouts – a caller of a dead server's
-  endpoint waits forever; capabilities can't be revoked; memory objects ≤ 1 MiB, mapping addresses
-  never reused. `log` must not `println!` (it would call itself).
+  the kernel (no file system). Starting one loads it under the scheduler lock (all cores pause
+  scheduling meanwhile); at most 16 handles, no memory objects, at start.
+- IPC (DECISIONS 020, 021): memory objects ≤ 1 MiB, mapping addresses never reused; the directory
+  holds 16 names, first come first served. `log` must not `println!` (it would call itself).
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – see `kernel/src/memory/paging.rs`.
 - The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.

@@ -50,8 +50,9 @@ the edges, code and docs in English.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
 - A new user program → a crate in `programs/` using `userlib`, plus: workspace `members` (not
   `default-members`), `PROGRAMS` in `xtask/src/build.rs`, a `program!` line in
-  `kernel/src/programs.rs`, and its start in `kernel/src/ipc/checks.rs` with the handles it gets
-  (document them at the top of its `main.rs`).
+  `kernel/src/programs.rs`, an entry in `PROGRAMS` in `kernel/src/ipc/checks.rs` (init gets a
+  `Program` handle for it), and its start in `programs/init` with the handles it gets (document
+  them at the top of its `main.rs`).
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
   if it can fail silently, print something the boot test can check.
 
@@ -81,7 +82,7 @@ the edges, code and docs in English.
 - **Changing a mapping needs a shootdown**: kernel pages via `paging::unmap`, process pages via
   `AddressSpace::map` – both do it. Don't call `invlpg` directly for shared mappings.
 - **Programs get nothing for free** (DECISIONS 020): a program can only use the handles it was
-  started with or received. Data goes in memory objects, never in messages. The `log` service
+  started with (by `init`) or received. Data goes in memory objects, never in messages. The `log` service
   must not use `println!` – that would be a call to itself.
 - **Debugging a hang:** `cargo xtask run`, then look at the last serial line. QEMU's `-d int`
   (add it in `xtask/src/qemu.rs`) logs every interrupt and exception.

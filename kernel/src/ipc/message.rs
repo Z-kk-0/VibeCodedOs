@@ -54,6 +54,8 @@ pub struct Delivery {
     pub badge: u64,
     pub words: [u64; 4],
     pub received: Received,
+    /// For `receive`: the handle to answer with.
+    pub reply: Option<Handle>,
 }
 
 /// The handle that came with a message, if any.
@@ -76,7 +78,14 @@ impl Delivery {
         frame.rdx = address;
         frame.rcx = pages | access << 32;
         [frame.r10, frame.r8, frame.r9, frame.r12] = self.words;
+        frame.r13 = self.reply.map_or(abi::NO_HANDLE, |handle| handle.0);
     }
+}
+
+/// Success with a new handle in `rsi` (`endpoint_new`, `mint`, spawning).
+pub fn write_handle(frame: &mut InterruptFrame, handle: Handle) {
+    write_error(frame, 0);
+    frame.rsi = handle.0;
 }
 
 /// The result of a call that failed, as the caller sees it.

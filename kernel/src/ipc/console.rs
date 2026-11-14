@@ -3,7 +3,7 @@
 //! 020). `call(console, lend_shared(memory), [length, ..])` prints that
 //! many bytes of the memory – and returns at once, no reply needed.
 
-use super::message::{Message, Mode};
+use super::message::{Attachment, Message, Mode};
 use super::object::Capability;
 use super::process::Process;
 use crate::memory::physical_to_pointer;
@@ -15,25 +15,35 @@ pub fn write(process: &Process, message: &Message) -> Result<(), u64> {
     if attachment.mode != Mode::LendShared {
         return Err(abi::ERROR_BAD_MODE); // the console only ever reads
     }
+    let bytes = lent_bytes(process, attachment, message.words[0] as usize)?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| abi::ERROR_NOT_UTF8)?;
+    print!("{text}");
+    Ok(())
+}
+
+/// The first `length` bytes of memory `process` lends a kernel object –
+/// read straight from the frames, so nothing needs mapping.
+pub fn lent_bytes(
+    process: &Process,
+    attachment: Attachment,
+    length: usize,
+) -> Result<Vec<u8>, u64> {
     let frames = match process.handles.get(attachment.handle) {
         Some(Capability::Memory(owned)) if !owned.lent => owned.memory.frames(),
         Some(Capability::Borrowed(borrowed)) => borrowed.frames.clone(),
         Some(_) => return Err(abi::ERROR_WRONG_KIND),
         None => return Err(abi::ERROR_BAD_HANDLE),
     };
-    let length = message.words[0];
-    if length > frames.len() as u64 * PAGE_SIZE {
+    if length as u64 > frames.len() as u64 * PAGE_SIZE {
         return Err(abi::ERROR_TOO_LONG);
     }
-    let mut bytes = Vec::with_capacity(length as usize);
+    let mut bytes = Vec::with_capacity(length);
     for &frame in &frames {
-        let chunk = (length - bytes.len() as u64).min(PAGE_SIZE) as usize;
+        let chunk = (length - bytes.len()).min(PAGE_SIZE as usize);
         // SAFETY: a frame of memory this process holds, read through the
         // window; `chunk` stays inside the page.
         let page = unsafe { core::slice::from_raw_parts(physical_to_pointer(frame), chunk) };
         bytes.extend_from_slice(page);
     }
-    let text = core::str::from_utf8(&bytes).map_err(|_| abi::ERROR_NOT_UTF8)?;
-    print!("{text}");
-    Ok(())
+    Ok(bytes)
 }

@@ -11,6 +11,8 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// The print page, made on first use and kept for the program's lifetime.
+/// Where `println!` sends to: handle 0 unless the program says otherwise.
+static LOG: AtomicU64 = AtomicU64::new(0);
 static PAGE_HANDLE: AtomicU64 = AtomicU64::new(abi::NO_HANDLE);
 static PAGE_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
@@ -66,7 +68,7 @@ fn send(text: &str) {
     // only lent out during the `call` below.
     unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), address, length) };
     let _ = call_raw(
-        crate::LOG,
+        Handle(LOG.load(Ordering::Relaxed)),
         handle,
         abi::ATTACH_LEND_SHARED,
         [length as u64, 0, 0, 0],
@@ -94,4 +96,10 @@ macro_rules! println {
         let _ = writeln!(buffer, $($argument)*);
         buffer.flush();
     }};
+}
+
+/// Makes `println!` use another handle for the log service – for programs
+/// that don't get it as handle 0 (`init`, which starts the log itself).
+pub fn set_log(handle: Handle) {
+    LOG.store(handle.0, Ordering::Relaxed);
 }

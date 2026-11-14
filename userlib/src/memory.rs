@@ -32,6 +32,13 @@ impl Memory {
         self.handle
     }
 
+    /// The handle without the duty to give it back – for moving it away.
+    pub(crate) fn into_handle(self) -> Handle {
+        let handle = self.handle;
+        core::mem::forget(self); // the kernel hands it over, not we
+        handle
+    }
+
     /// Where it's mapped – for programs that test what happens after it
     /// isn't anymore.
     pub fn address(&self) -> *const u8 {

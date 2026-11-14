@@ -1,9 +1,11 @@
 //! A user program as the kernel sees it: an address space, the handles it
-//! holds, and the call it still has to answer (DECISIONS.md, 018 and 020).
+//! holds, and what it waits for (DECISIONS.md, 018, 020 and 021).
 
+use super::endpoint::Endpoint;
 use super::object::Capability;
 use crate::memory::AddressSpace;
-use capability::{Handle, HandleTable, MappingArea};
+use alloc::sync::Arc;
+use capability::{HandleTable, MappingArea};
 use paging::{Flags, PAGE_SIZE};
 use scheduling::TaskId;
 
@@ -16,22 +18,21 @@ pub struct Process {
     pub space: AddressSpace,
     pub handles: HandleTable<Capability>,
     area: MappingArea,
-    /// The call this process received and must answer with `reply`.
-    pub replying_to: Option<PendingCall>,
+    /// Set while the task is blocked somewhere it may be woken from by
+    /// something other than a reply: a queue (and maybe a deadline) or a
+    /// child it waits for. `None` while it waits for a reply: that only
+    /// ends with the reply or the reply handle's loss.
+    pub waiting: Option<Waiting>,
 }
 
-pub struct PendingCall {
-    pub caller: TaskId,
-    pub lend: Option<Lend>,
-}
-
-/// A borrow that ends with the reply.
-#[derive(Clone, Copy)]
-pub struct Lend {
-    /// The owner's handle (in the caller).
-    pub lender: Handle,
-    /// The borrowed handle (in the receiver).
-    pub borrower: Handle,
+pub enum Waiting {
+    InQueue {
+        endpoint: Arc<Endpoint>,
+        as_caller: bool,
+        /// The tick to give up at (`ERROR_TIMED_OUT`), if any.
+        deadline: Option<u64>,
+    },
+    ForChild(TaskId),
 }
 
 impl Process {
@@ -41,7 +42,7 @@ impl Process {
             space,
             handles: HandleTable::new(),
             area: MappingArea::new(MAPPING_START, MAPPING_END, PAGE_SIZE),
-            replying_to: None,
+            waiting: None,
         };
         for capability in handles {
             process.handles.insert(capability);
@@ -96,7 +97,9 @@ impl Drop for Process {
             Capability::Borrowed(borrowed) => {
                 self.unmap_pages(borrowed.address, borrowed.frames.len());
             }
-            Capability::Endpoint(_) | Capability::Console => {}
+            // Reply handles and receiving ends were dealt with when the
+            // program ended (`exit.rs`); the rest needs no cleanup.
+            _ => {}
         });
     }
 }

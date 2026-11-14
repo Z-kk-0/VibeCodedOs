@@ -20,6 +20,8 @@ pub fn switch(frame: *mut InterruptFrame) -> *mut InterruptFrame {
     if core >= scheduler.core_count() {
         return frame; // this core hasn't joined yet
     }
+    // Tasks that waited too long in an IPC queue give up now.
+    crate::ipc::expire_timeouts(scheduler, time::ticks());
     // Free finished tasks *before* picking the next one: never one a core
     // still runs or is still leaving, so we never free a stack – or an
     // address space – that is in use.

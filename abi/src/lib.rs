@@ -1,5 +1,5 @@
-//! The contract between the kernel and user programs (DECISIONS.md, 018 and
-//! 020): how to make a system call, and what the numbers mean.
+//! The contract between the kernel and user programs (DECISIONS.md, 018,
+//! 020 and 021): how to make a system call, and what the numbers mean.
 //!
 //! A program puts the call number in `rax` and executes `int 0x80`. Every
 //! register the kernel doesn't name below as a result is preserved.
@@ -10,14 +10,15 @@
 //! attached handle. Data never travels inside a message – it travels as a
 //! `Memory` object that is moved or lent.
 //!
-//! | Register | `call` / `reply` in          | `call` / `receive` out          |
-//! |----------|------------------------------|---------------------------------|
-//! | `rax`    | call number                  | status: 0 or an `ERROR_*`       |
-//! | `rdi`    | endpoint (not for `reply`)   | badge of the sender's handle    |
-//! | `rsi`    | attached handle or `NO_HANDLE` | received handle or `NO_HANDLE` |
-//! | `rdx`    | `ATTACH_*` mode              | address of received memory or 0 |
-//! | `rcx`    | –                            | its page count + `ACCESS_*` << 32 |
-//! | `r10`, `r8`, `r9`, `r12` | message words 0–3 | message words 0–3         |
+//! | Register | `call` / `reply` in            | `call` / `receive` out            |
+//! |----------|--------------------------------|-----------------------------------|
+//! | `rax`    | call number                    | status: 0 or an `ERROR_*`         |
+//! | `rdi`    | endpoint / reply handle        | badge of the sender's handle      |
+//! | `rsi`    | attached handle or `NO_HANDLE` | received handle or `NO_HANDLE`    |
+//! | `rdx`    | `ATTACH_*` mode                | address of received memory or 0   |
+//! | `rcx`    | timeout in ticks, 0 = none     | its page count + `ACCESS_*` << 32 |
+//! | `r10`, `r8`, `r9`, `r12` | message words 0–3 | message words 0–3             |
+//! | `r13`    | –                              | `receive`: the reply handle       |
 
 #![cfg_attr(not(test), no_std)]
 
@@ -28,27 +29,39 @@ pub const SYSCALL_VECTOR: u8 = 0x80;
 pub const EXIT: u64 = 0;
 /// `sleep(ticks)` – pauses for at least `ticks` timer ticks (10 ms each).
 pub const SLEEP: u64 = 2;
-/// `call(endpoint, attachment, words)` – sends a message and waits for the
-/// reply, which comes back like a received message.
+/// `call(object, attachment, words, timeout)` – sends a message and waits
+/// for the reply, which comes back like a received message. The timeout
+/// only counts while no receiver has taken the call (DECISIONS.md, 021).
+/// Kernel objects answer at once: the console prints, a program starts
+/// (`SPAWN_*`), a child reports how it ended (`CHILD_*`).
 pub const CALL: u64 = 3;
-/// `receive(endpoint)` – waits for the next message on an endpoint this
-/// program may receive on. Answer it with `reply` before receiving again.
+/// `receive(endpoint, timeout)` – waits for the next message on an
+/// endpoint this program may receive on. Comes with a reply handle.
 pub const RECEIVE: u64 = 4;
-/// `reply(attachment, words)` – answers the last received message. Ends
-/// any borrow that came with it.
+/// `reply(reply_handle, attachment, words)` – answers that call and uses
+/// the reply handle up. Ends any borrow that came with the call.
 pub const REPLY: u64 = 5;
 /// `memory_new(pages)` – a new, zeroed `Memory` object, owned by and mapped
 /// into the caller. Returns the handle in `rsi`, address in `rdx`, size in `rcx`.
 pub const MEMORY_NEW: u64 = 6;
-/// `drop(handle)` – gives a handle up. Owned memory is freed.
+/// `drop(handle)` – gives a handle up. Owned memory is freed; a dropped
+/// reply handle tells its caller `ERROR_PEER_GONE`; when the last
+/// receiving end of an endpoint is gone, the endpoint is closed.
 pub const DROP: u64 = 7;
+/// `endpoint_new()` – a new endpoint; returns its receiving end in `rsi`.
+pub const ENDPOINT_NEW: u64 = 8;
+/// `mint(receiving_end, badge)` – a new sending end with that badge (`rsi`).
+pub const MINT: u64 = 9;
+/// `revoke(receiving_end, badge)` – every sending end with that badge, and
+/// every copy of one, stops working (`ERROR_REVOKED`). Mint new ones after.
+pub const REVOKE: u64 = 10;
 
 /// "No handle" in handle registers.
 pub const NO_HANDLE: u64 = u64::MAX;
 
 /// How a handle is attached to a message (`rdx`).
 pub const ATTACH_NONE: u64 = 0;
-/// Endpoints only: the receiver gets its own copy (send rights only).
+/// Endpoints (as a sending end) and programs: the receiver gets a copy.
 pub const ATTACH_COPY: u64 = 1;
 /// The receiver gets the object; the sender loses it.
 pub const ATTACH_MOVE: u64 = 2;
@@ -66,18 +79,29 @@ pub const ACCESS_EXCLUSIVE: u64 = 3;
 pub const MAX_MEMORY_PAGES: u64 = 256;
 pub const PAGE_SIZE: u64 = 4096;
 
+/// Starting a program: `call(program, lend_shared(page), [count, ..])`.
+/// The page holds `count` pairs of `u64`: a handle of ours and how to pass
+/// it (`ATTACH_COPY` or `ATTACH_MOVE`). The child starts with them as
+/// handles 0, 1, 2, …; the reply brings a child handle (`rsi`).
+pub const SPAWN_MAX_HANDLES: u64 = 16;
+/// `call(child)` waits until the child has ended. Reply word 0 says how,
+/// word 1 is the exit code or the CPU exception that stopped it.
+pub const CHILD_EXITED: u64 = 0;
+pub const CHILD_KILLED: u64 = 1;
+
 /// Results from `u64::MAX` downwards are errors.
 pub const ERROR_UNKNOWN_CALL: u64 = u64::MAX;
 /// The handle doesn't exist (or no longer does).
 pub const ERROR_BAD_HANDLE: u64 = u64::MAX - 1;
-/// The object can't do that: e.g. receive on a send-only endpoint, lend
-/// an endpoint, move borrowed memory.
+/// The object can't do that: e.g. receive on a sending end, lend an
+/// endpoint, move borrowed memory, reply with something that isn't a reply.
 pub const ERROR_WRONG_KIND: u64 = u64::MAX - 2;
-/// The object is in use: memory already lent, a reply still owed.
+/// The object is in use: memory that is lent out right now.
 pub const ERROR_BUSY: u64 = u64::MAX - 3;
-/// `reply` without a received message.
-pub const ERROR_NO_CALLER: u64 = u64::MAX - 4;
-/// The other side ended before answering. Lent memory is back.
+/// The ELF file of a program is broken.
+pub const ERROR_BAD_PROGRAM: u64 = u64::MAX - 4;
+/// The other side ended (or gave up its reply handle) before answering, or
+/// the endpoint has no receiving end anymore. Lent memory is back.
 pub const ERROR_PEER_GONE: u64 = u64::MAX - 5;
 /// Not enough memory, or more pages than `MAX_MEMORY_PAGES`.
 pub const ERROR_OUT_OF_MEMORY: u64 = u64::MAX - 6;
@@ -87,8 +111,12 @@ pub const ERROR_TOO_LONG: u64 = u64::MAX - 7;
 pub const ERROR_NOT_UTF8: u64 = u64::MAX - 8;
 /// An unknown `ATTACH_*` mode.
 pub const ERROR_BAD_MODE: u64 = u64::MAX - 9;
+/// Nobody took the call (or sent us one) before the timeout.
+pub const ERROR_TIMED_OUT: u64 = u64::MAX - 10;
+/// The receiver revoked this sending end's badge.
+pub const ERROR_REVOKED: u64 = u64::MAX - 11;
 
-const LOWEST_ERROR: u64 = ERROR_BAD_MODE;
+const LOWEST_ERROR: u64 = ERROR_REVOKED;
 
 pub fn is_error(result: u64) -> bool {
     result >= LOWEST_ERROR
@@ -146,7 +174,7 @@ mod tests {
 
     #[test]
     fn every_error_counts_as_an_error() {
-        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_BAD_MODE] {
+        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_REVOKED] {
             assert!(is_error(error));
         }
         assert!(!is_error(0));

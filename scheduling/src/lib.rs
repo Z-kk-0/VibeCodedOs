@@ -133,6 +133,11 @@ impl<T> RunQueue<T> {
         }
     }
 
+    /// Every task's ID, e.g. to look for ones waiting too long.
+    pub fn ids(&self) -> Vec<TaskId> {
+        self.tasks.iter().map(|task| task.id).collect()
+    }
+
     pub fn state(&self, id: TaskId) -> Option<State> {
         self.tasks
             .iter()
