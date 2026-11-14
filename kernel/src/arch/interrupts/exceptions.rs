@@ -7,7 +7,9 @@
 use super::InterruptFrame;
 use crate::arch::{self, cpu};
 use crate::task::{self, Exit};
-use x86::exceptions::{BREAKPOINT, NON_MASKABLE_INTERRUPT, PAGE_FAULT, describe_page_fault, name};
+use x86::exceptions::{
+    BREAKPOINT, NON_MASKABLE_INTERRUPT, PAGE_FAULT, describe_page_fault, name, page_was_unmapped,
+};
 
 /// Returns the frame to resume (another task's, if a program was ended).
 pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
@@ -26,6 +28,12 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return frame;
     }
     if frame.came_from_user_mode() {
+        if frame.vector == PAGE_FAULT
+            && page_was_unmapped(frame.error_code)
+            && task::grow_stack(cpu::page_fault_address())
+        {
+            return frame; // the stack grew: run the instruction again
+        }
         let name = task::current_name();
         let (vector, error) = (frame.vector, frame.error_code);
         if vector == PAGE_FAULT {

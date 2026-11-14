@@ -69,7 +69,7 @@ Address space (upper half = kernel, shared by all; lower half = one per user pro
 | `0xFFFF_FF00_0000_0000` | kernel heap, 448 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
 | `0xFFFF_FF70_0000_0000` | kernel stacks, 64 KiB slots with guard pages | `kernel/src/memory/stacks.rs` |
 | `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
-| `0x0000_7FFF_FFFF_0000` | top of a program's stack (16 KiB, guard page above) | `kernel/src/task/program.rs` |
+| `0x0000_7FFF_FFFF_0000` | top of a program's stack (grows on demand up to 8 MiB; guard pages above and below) | `kernel/src/task/program.rs` |
 | `0x0000_1000_0000_0000` | a program's memory objects, owned or borrowed (guard page after each) | `kernel/src/ipc/process.rs` |
 | `0x0000_0000_0040_0000` | a program's image (W^X, user) | `kernel/src/task/program.rs` |
 
@@ -134,12 +134,12 @@ last receiving end is gone and keep a generation per badge for `revoke`; queue w
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
-| `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
+| `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
 | `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, freeing exited tasks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, IPIs). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
 | `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges. |
-| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `println!`, panic handler. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, a heap (`alloc`), `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
@@ -181,10 +181,9 @@ Next, in order (each one a milestone with its own decision entry):
   never reused (on purpose, like memory objects; empty page tables are freed).
 - Tasks: no priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task
   still stops the whole machine (in user programs it only ends the program).
-- Programs: one task per program, fixed 16 KiB stack, no heap (but memory objects), embedded in
-  the kernel (no file system).
-- IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; the directory holds 16 names, first come
-  first served.
+- Programs: one task per program, embedded in the kernel (no file system). The user heap's
+  size-class pages, like the kernel's, stay with the program until it ends.
+- IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; directory names are first come, first served.
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.
 - The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep

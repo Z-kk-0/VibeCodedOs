@@ -7,21 +7,25 @@
 //! can start in any order. This is what reply handles are for: a server
 //! can hold many unanswered calls and answer them in any order.
 //!
+//! Both tables grow as needed (the user heap, DECISIONS.md, 022).
+//!
 //! Handles: 0 = log, 1 = the directory endpoint (receive).
 
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use userlib::directory::{LOOKUP, REGISTER};
 use userlib::{Attach, Handle, Reply, abi, println, receive, reply};
 
 const REQUESTS: Handle = Handle(1);
-const SLOTS: usize = 16;
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
-    let mut names: [Option<(u64, Handle)>; SLOTS] = [None; SLOTS];
-    let mut parked: [Option<(u64, Reply)>; SLOTS] = core::array::from_fn(|_| None);
+    let mut names: Vec<(u64, Handle)> = Vec::new();
+    let mut parked: Vec<(u64, Reply)> = Vec::new();
     loop {
         let Ok(mut request) = receive(REQUESTS) else {
             continue;
@@ -36,32 +40,30 @@ extern "C" fn _start() -> ! {
                     let _ = reply(answer, Attach::Nothing, [abi::ERROR_WRONG_KIND, 0, 0, 0]);
                     continue;
                 };
-                let status = store(&mut names, name, endpoint);
-                let _ = reply(answer, Attach::Nothing, [status, 0, 0, 0]);
-                if status == 0 {
-                    // Everyone who asked too early gets their answer now.
-                    for slot in parked.iter_mut() {
-                        if slot.as_ref().is_some_and(|(wanted, _)| *wanted == name)
-                            && let Some((_, waiting)) = slot.take()
-                        {
-                            let _ = reply(waiting, Attach::Copy(endpoint), [0; 4]);
-                        }
-                    }
+                if find(&names, name).is_some() {
+                    // First come, first served.
+                    let _ = reply(answer, Attach::Nothing, [abi::ERROR_BUSY, 0, 0, 0]);
+                    continue;
+                }
+                names.push((name, endpoint));
+                print_name("is registered", name);
+                let _ = reply(answer, Attach::Nothing, [0; 4]);
+                // Everyone who asked too early gets their answer now.
+                let (waiting, rest): (Vec<_>, Vec<_>) =
+                    parked.drain(..).partition(|(wanted, _)| *wanted == name);
+                parked = rest;
+                for (_, waiting) in waiting {
+                    let _ = reply(waiting, Attach::Copy(endpoint), [0; 4]);
                 }
             }
             LOOKUP => match find(&names, name) {
                 Some(endpoint) => {
                     let _ = reply(answer, Attach::Copy(endpoint), [0; 4]);
                 }
-                None => match parked.iter_mut().find(|slot| slot.is_none()) {
-                    Some(slot) => {
-                        print_name("is not registered yet - the lookup waits for it", name);
-                        *slot = Some((name, answer));
-                    }
-                    None => {
-                        let _ = reply(answer, Attach::Nothing, [abi::ERROR_OUT_OF_MEMORY, 0, 0, 0]);
-                    }
-                },
+                None => {
+                    print_name("is not registered yet - the lookup waits for it", name);
+                    parked.push((name, answer));
+                }
             },
             _ => {
                 let _ = reply(answer, Attach::Nothing, [abi::ERROR_UNKNOWN_CALL, 0, 0, 0]);
@@ -70,24 +72,9 @@ extern "C" fn _start() -> ! {
     }
 }
 
-fn store(names: &mut [Option<(u64, Handle)>], name: u64, endpoint: Handle) -> u64 {
-    if find(names, name).is_some() {
-        return abi::ERROR_BUSY; // first come, first served
-    }
-    match names.iter_mut().find(|slot| slot.is_none()) {
-        Some(slot) => {
-            *slot = Some((name, endpoint));
-            print_name("is registered", name);
-            0
-        }
-        None => abi::ERROR_OUT_OF_MEMORY,
-    }
-}
-
-fn find(names: &[Option<(u64, Handle)>], name: u64) -> Option<Handle> {
+fn find(names: &[(u64, Handle)], name: u64) -> Option<Handle> {
     names
         .iter()
-        .flatten()
         .find(|(known, _)| *known == name)
         .map(|&(_, endpoint)| endpoint)
 }

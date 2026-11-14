@@ -51,6 +51,11 @@ pub fn name(vector: u64) -> &'static str {
 }
 
 /// What the page fault error code says went wrong.
+/// Whether a page fault hit an unmapped page (rather than a permission).
+pub fn page_was_unmapped(error_code: u64) -> bool {
+    error_code & 1 == 0
+}
+
 pub fn describe_page_fault(error_code: u64) -> &'static str {
     const PAGE_PRESENT: u64 = 1 << 0;
     const WRITE: u64 = 1 << 1;

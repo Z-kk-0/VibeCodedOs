@@ -6,3 +6,4 @@ description = "What every Hematite user program links against: system calls, pri
 
 [dependencies]
 abi = { path = "../abi" }
+heap = { path = "../heap" }

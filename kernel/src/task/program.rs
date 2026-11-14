@@ -15,7 +15,11 @@ pub const PROGRAM_BASE: u64 = 0x40_0000;
 /// Top of the user stack, near the end of the lower half. The page above
 /// it stays unmapped, so running off the top faults instead of corrupting.
 const STACK_TOP: u64 = 0x0000_7FFF_FFFF_0000;
+/// Mapped at the start; the rest of the stack appears when it's touched.
 const STACK_PAGES: u64 = 4;
+/// 8 MiB of room to grow into (DECISIONS.md, 022). Its lowest page is
+/// never mapped: a stack that overflows all of it still faults.
+const STACK_MAX_PAGES: u64 = 2048;
 const USER_DATA: Flags = Flags {
     writable: true,
     executable: false,
@@ -102,4 +106,23 @@ fn map_image_page(
     // physical memory window; `bytes` is at most one page long.
     unsafe { physical_to_pointer(frame).copy_from_nonoverlapping(bytes.as_ptr(), bytes.len()) };
     Ok(())
+}
+
+/// For the page fault handler: maps a fresh page if `address` lies in the
+/// current program's stack room and isn't mapped yet – the stack grows on
+/// demand. Returns whether it did (then the faulting instruction can simply
+/// run again).
+pub fn grow_stack(address: u64) -> bool {
+    let lowest = STACK_TOP - (STACK_MAX_PAGES - 1) * PAGE_SIZE; // above the guard page
+    if !(lowest..STACK_TOP).contains(&address) {
+        return false;
+    }
+    let page = address / PAGE_SIZE * PAGE_SIZE;
+    super::with_tasks(|tasks, core| {
+        let Some(process) = tasks.current(core).process.as_mut() else {
+            return false;
+        };
+        process.space.translate(page).is_none()
+            && process.space.map_new_page(page, USER_DATA).is_ok()
+    })
 }

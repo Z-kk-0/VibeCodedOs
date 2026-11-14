@@ -9,6 +9,11 @@
 
 #![no_std]
 
+// Box, Vec, String & co. for every program, backed by memory objects
+// (allocator.rs).
+extern crate alloc;
+
+mod allocator;
 pub mod directory;
 mod endpoint;
 mod ipc;
