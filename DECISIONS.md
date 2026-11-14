@@ -6,6 +6,7 @@ Short log of architecture decisions. Per entry: what, why, alternatives.
 - OS from scratch, for learning. One programming language (plus the unavoidable bit of assembly).
 - No big external libraries that do the real work (bootloader crates, ready-made paging/interrupt libs, etc.).
 - **Not a textbook clone.** The usual path is a reference, not a rule. Where a less common design is better or more interesting, we take it and say why.
+- **Multi-core by design.** Hematite must use all CPU cores, and nothing may rely on "only one thing runs at a time" (e.g. "the caller is blocked, so nobody touches its memory"). Exclusivity is enforced with locks, atomics and page tables – on every core.
 - **Handover-ready at every commit.** Anyone – human or AI – must be able to pick this up cold. Docs (`CONTRIBUTING.md`, `ARCHITECTURE.md`, this file) change in the same commit as the code they describe. Tooling is plain Rust and cross-platform (`cargo xtask`).
 
 ## Coding rules

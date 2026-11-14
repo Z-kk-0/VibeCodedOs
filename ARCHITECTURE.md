@@ -106,8 +106,10 @@ Next, in order (each one a milestone with its own decision entry):
 
 ## Known limits (on purpose, for now)
 
-- Single core. `sync::SpinLock` disables interrupts while held, so it's already safe against
-  interrupt handlers; it will need no change for multi-core.
+- **Single core – to be fixed next** (ground rule "multi-core by design"). Already fine for SMP:
+  `sync::SpinLock` (atomic, interrupts off while held), the frame table, heap and page-table locks.
+  Not yet: one global TSS/GDT, one scheduler "current task", the APIC timer on one core only, and
+  no TLB shootdown when mappings change.
 - Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
 - Tasks: 16 KiB kernel stacks without guard pages (an overflow corrupts the heap silently), no
   priorities, no blocking on events yet – only sleeping. An exception in a *kernel* task still
