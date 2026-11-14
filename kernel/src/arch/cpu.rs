@@ -61,6 +61,16 @@ pub fn page_table_root() -> u64 {
     cr3 & ADDRESS_MASK
 }
 
+/// Switches to another address space.
+///
+/// # Safety
+/// `root` must be a valid top-level page table that maps the kernel
+/// exactly like the current one (the code running now must stay mapped).
+pub unsafe fn set_page_table_root(root: u64) {
+    // SAFETY: forwarded to the caller.
+    unsafe { asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags)) };
+}
+
 /// Makes the CPU forget cached translations (the TLB) by reloading CR3.
 /// Needed after removing or changing mappings.
 pub fn flush_translation_cache() {

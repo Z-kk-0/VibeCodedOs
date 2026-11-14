@@ -1,0 +1,8 @@
+[package]
+name = "intruder"
+version = "0.1.0"
+edition = "2024"
+description = "A misbehaving user program: tries to read kernel memory and must be stopped"
+
+[dependencies]
+userlib = { path = "../../userlib" }

@@ -1,12 +1,16 @@
 //! Memory management: physical frames (DECISIONS.md, 014), page tables
-//! (015) and the kernel heap (016).
+//! (015), the kernel heap (016) and process address spaces (018).
 
+mod address_space;
 mod allocator;
 mod checks;
 mod frames;
 pub mod paging;
+mod user;
 
+pub use address_space::AddressSpace;
 pub use frames::{allocate_frame, free_frame, free_frame_count};
+pub use user::copy_from_user;
 
 use boot_info::{BootInfo, MemoryKind, PHYSICAL_MEMORY_WINDOW};
 
@@ -31,7 +35,9 @@ pub fn start(boot_info: &BootInfo) {
 
     paging::remove_identity_map();
     let code = start as fn(&BootInfo) as usize as u64;
-    let code_physical = paging::translate(code).expect("kernel code is not mapped");
+    let code_physical = paging::translate(code)
+        .expect("kernel code is not mapped")
+        .physical_address;
     assert_eq!(paging::translate(0x1000), None, "identity map still there");
     println!(
         "Identity map removed, lower half empty. Kernel code {code:#x} -> physical {code_physical:#x}."

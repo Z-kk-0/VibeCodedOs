@@ -40,6 +40,13 @@ impl Gate {
             reserved: 0,
         }
     }
+
+    /// Lets user mode raise this vector with `int n` (gate privilege level 3).
+    /// Without it, `int n` from ring 3 is a General Protection Fault.
+    pub fn callable_from_user_mode(mut self) -> Self {
+        self.attributes |= 3 << 5;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +66,14 @@ mod tests {
         assert_eq!(gate.handler_high, 0x1122_3344);
         assert_eq!(gate.code_selector, 0x08);
         assert_eq!(gate.stack_index, 1);
+    }
+
+    #[test]
+    fn user_callable_gates_have_privilege_level_three() {
+        assert_eq!(Gate::new(0, 0x08, 0).attributes, 0x8E);
+        assert_eq!(
+            Gate::new(0, 0x08, 0).callable_from_user_mode().attributes,
+            0xEE
+        );
     }
 }

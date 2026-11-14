@@ -12,6 +12,7 @@ pub mod port;
 mod start;
 
 pub use apic::TimerSetup;
+pub use gdt::set_kernel_stack;
 pub use interrupts::{InterruptFrame, yield_now};
 
 /// Installs our own segment and interrupt tables, replacing the firmware's,

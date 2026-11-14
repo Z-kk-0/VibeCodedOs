@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+abi = { path = "../abi" }
 boot_info = { path = "../boot_info" }
+elf = { path = "../elf" }
 frame_table = { path = "../frame_table" }
 heap = { path = "../heap" }
 paging = { path = "../paging" }

@@ -36,23 +36,31 @@ UEFI firmware (OVMF in QEMU)
               │    └─ self-checks: frames, heap (Vec, Box, String, BTreeMap)  memory/checks.rs
               ├─ task::init: boot code becomes task 0, idle task created  kernel/src/task/
               ├─ task::check: 2 busy tasks + 1 sleeper must interleave   task/checks.rs
+              ├─ user programs: hello must exit 0, intruder must be      programs/, task/program.rs
+              │  stopped; both address spaces freed
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ heartbeat: boot task sleeps 10 s at a time; idle task runs hlt
 ```
 
-Address space (upper half = kernel, lower half = future user programs):
+Address space (upper half = kernel, shared by all; lower half = one per user program):
 
 | Start | What | Defined in |
 |---|---|---|
 | `0xFFFF_FFFF_8000_0000` | kernel image (W^X) | `boot_info` |
 | `0xFFFF_FF00_0000_0000` | kernel heap, 512 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
 | `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
-| `0x0000_0000_0000_0000` | empty – for user programs | |
+| `0x0000_7FFF_FFFF_0000` | top of a program's stack (16 KiB, guard page above) | `kernel/src/task/program.rs` |
+| `0x0000_0000_0040_0000` | a program's image (W^X, user) | `kernel/src/task/program.rs` |
 
 All interrupts enter through one path: a 16-byte stub per vector → `interrupt_common` saves all
 registers into an `InterruptFrame` → `interrupt_dispatch` in Rust (DECISIONS 008). The dispatcher
-returns the frame to resume; on a timer tick or `int 0x30` (sleep/exit) that may be another task's
-frame on another stack – that is the whole task switch (DECISIONS 017).
+returns the frame to resume; on a timer tick, `int 0x30` (kernel sleep/exit) or `int 0x80` (system
+call) that may be another task's frame on another stack – that is the whole task switch
+(DECISIONS 017). Switching to a user program also loads its CR3 and puts its kernel stack into the
+TSS, where the CPU finds it on the next interrupt from ring 3 (DECISIONS 018).
+
+System calls (`abi` crate): `int 0x80`, number in `rax`, arguments in `rdi`/`rsi`, result in `rax`.
+Today: `exit`, `write`, `sleep`. Programs use `userlib` (wrappers, `println!`, panic handler).
 
 ## Crates
 
@@ -67,6 +75,9 @@ frame on another stack – that is the whole task switch (DECISIONS 017).
 | `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
 | `scheduling` | any + host | Run queue: round robin, sleeping, idle fallback, freeing exited tasks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers). Unit-tested. |
+| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, error codes. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: system calls, `println!`, panic handler. |
+| `programs/*` | `x86_64-unknown-none` | User programs, embedded into the kernel: `hello`, `intruder` (attacks the kernel on purpose). |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
 Rule of thumb: logic that is "bytes in, bytes out" goes into a host-testable crate with unit tests;
@@ -85,20 +96,26 @@ Done:
       reclaimed (DECISIONS 015)
 - [x] Kernel heap: `alloc` works – Box, Vec, String, BTreeMap (DECISIONS 016)
 - [x] Preemptive kernel tasks: spawn, sleep, exit, round robin at 100 Hz (DECISIONS 017)
+- [x] User mode: programs in ring 3 with own address spaces, system calls via `int 0x80`,
+      faulty programs are stopped, not the kernel (DECISIONS 018)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **User mode + syscalls** – ring 3, `syscall`/`sysret`, a process = own lower half + tasks,
-   first user program.
-2. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
-3. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **Capabilities + ownership IPC** – handles, channels, page move/borrow (DECISIONS 012).
+   Design first, together with the owner: this is the heart of Hematite.
+2. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
 
 ## Known limits (on purpose, for now)
 
 - Single core. `sync::SpinLock` disables interrupts while held, so it's already safe against
   interrupt handlers; it will need no change for multi-core.
 - Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
-- Tasks: 16 KiB stacks without guard pages (an overflow corrupts the heap silently), no priorities,
-  no blocking on events yet – only sleeping. Exceptions in any task still stop the whole machine.
+- Tasks: 16 KiB kernel stacks without guard pages (an overflow corrupts the heap silently), no
+  priorities, no blocking on events yet – only sleeping. An exception in a *kernel* task still
+  stops the whole machine (in user programs it only ends the program).
+- Programs: one task per program, fixed 16 KiB stack, no heap, embedded in the kernel. `write`
+  prints with the kernel's lock held, so one program can't tear another's line apart.
+- Upper-half top-level page table entries must all exist before the first program starts
+  (they're copied, not shared) – see `kernel/src/memory/paging.rs`.
 - The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.
 - The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep
   it uncached. Proper per-device mappings come with the first real drivers.

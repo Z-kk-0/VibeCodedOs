@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "abi"
+version = "0.1.0"
+
+[[package]]
 name = "boot_info"
 version = "0.1.0"
 
@@ -19,10 +23,26 @@ name = "heap"
 version = "0.1.0"
 
 [[package]]
+name = "hello"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
+name = "intruder"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "abi",
  "boot_info",
+ "elf",
  "frame_table",
  "heap",
  "paging",
@@ -46,6 +66,13 @@ version = "0.1.0"
 [[package]]
 name = "scheduling"
 version = "0.1.0"
+
+[[package]]
+name = "userlib"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
 
 [[package]]
 name = "x86"

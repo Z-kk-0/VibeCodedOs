@@ -47,6 +47,9 @@ the edges, code and docs in English.
 - Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
   new small crate (add it to the workspace `members` *and* `default-members`), with unit tests.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
+- A new user program → a crate in `programs/` using `userlib`, plus: workspace `members` (not
+  `default-members`), `PROGRAMS` in `xtask/src/build.rs`, an `include_bytes!` in
+  `kernel/src/programs.rs`.
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
   if it can fail silently, print something the boot test can check.
 

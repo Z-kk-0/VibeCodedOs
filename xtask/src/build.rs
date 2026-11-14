@@ -1,5 +1,6 @@
-//! Building: kernel first, then the loader – which embeds the kernel
-//! (DECISIONS.md, 004) – then the folder QEMU boots from.
+//! Building, innermost first: user programs, then the kernel (which embeds
+//! them, kernel/src/programs.rs), then the loader (which embeds the kernel,
+//! DECISIONS.md 004), then the folder QEMU boots from.
 
 use crate::{Options, Result, root, run_command};
 use std::fs;
@@ -8,12 +9,23 @@ use std::process::Command;
 
 pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
 pub const LOADER_TARGET: &str = "x86_64-unknown-uefi";
+/// User programs run on the bare CPU just like the kernel.
+pub const PROGRAM_TARGET: &str = KERNEL_TARGET;
+/// Every crate in `programs/`; each is embedded into the kernel.
+pub const PROGRAMS: [&str; 2] = ["hello", "intruder"];
 
 /// Builds everything and returns the boot partition folder (`build/esp`).
 pub fn build(options: Options) -> Result<PathBuf> {
     let profile = if options.release { "release" } else { "debug" };
 
-    let mut kernel = cargo_build("kernel", KERNEL_TARGET, options.release);
+    let mut programs = cargo_build(&PROGRAMS, PROGRAM_TARGET, options.release);
+    run_command(&mut programs)?;
+
+    let mut kernel = cargo_build(&["kernel"], KERNEL_TARGET, options.release);
+    kernel.env(
+        "HEMATITE_PROGRAMS",
+        root().join("target").join(PROGRAM_TARGET).join(profile),
+    );
     // Read by the kernel at compile time (`option_env!`), see kernel/src/main.rs.
     if options.crash {
         kernel.env("HEMATITE_CRASH_TEST", "1");
@@ -27,7 +39,7 @@ pub fn build(options: Options) -> Result<PathBuf> {
         .join(KERNEL_TARGET)
         .join(profile)
         .join("kernel");
-    let mut loader = cargo_build("loader", LOADER_TARGET, options.release);
+    let mut loader = cargo_build(&["loader"], LOADER_TARGET, options.release);
     loader.env("HEMATITE_KERNEL_ELF", &kernel_elf);
     run_command(&mut loader)?;
 
@@ -46,9 +58,13 @@ pub fn build(options: Options) -> Result<PathBuf> {
     Ok(esp)
 }
 
-fn cargo_build(package: &str, target: &str, release: bool) -> Command {
+fn cargo_build(packages: &[&str], target: &str, release: bool) -> Command {
     let mut command = Command::new("cargo");
-    command.args(["build", "--package", package, "--target", target]);
+    command.arg("build");
+    for package in packages {
+        command.args(["--package", package]);
+    }
+    command.args(["--target", target]);
     if release {
         command.arg("--release");
     }

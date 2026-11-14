@@ -13,6 +13,8 @@ const STUB_SIZE: u64 = 16;
 
 /// Software interrupt a task raises to give up the CPU (`int 0x30`).
 pub const YIELD_VECTOR: u64 = 0x30;
+/// User programs call the kernel with `int 0x80` (see the `abi` crate).
+const SYSCALL_VECTOR: u64 = abi::SYSCALL_VECTOR as u64;
 
 unsafe extern "C" {
     /// Start of the stub block in `stubs.rs`. Only its address matters.
@@ -33,7 +35,8 @@ pub fn yield_now() {
 /// Returns the frame to resume: `frame` itself, or another task's.
 extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     match frame.vector {
-        vector if vector < FIRST_NON_EXCEPTION => exceptions::handle(frame),
+        vector if vector < FIRST_NON_EXCEPTION => return exceptions::handle(frame),
+        SYSCALL_VECTOR => return crate::syscall::handle(frame),
         apic::TIMER_VECTOR => {
             crate::time::on_tick();
             apic::end_of_interrupt();

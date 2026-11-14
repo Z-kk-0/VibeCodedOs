@@ -1,0 +1,8 @@
+[package]
+name = "userlib"
+version = "0.1.0"
+edition = "2024"
+description = "What every Hematite user program links against: system calls, println!, panic handler"
+
+[dependencies]
+abi = { path = "../abi" }

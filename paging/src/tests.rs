@@ -223,3 +223,46 @@ fn parts_of_huge_pages_cannot_be_unmapped() {
     assert_eq!(mapper.unmap(0x1000), Err(UnmapError::HugePage));
     assert_eq!(mapper.unmap(0x4000_0000), Err(UnmapError::NotMapped));
 }
+
+#[test]
+fn releasing_the_lower_half_reports_pages_and_tables() {
+    const USER: Flags = Flags {
+        writable: true,
+        executable: false,
+        user: true,
+    };
+    let mut memory = FakeMemory::new(16);
+    let mut mapper = mapper(&mut memory);
+    mapper
+        .map(0x40_0000, 0x1000, PageSize::Normal, USER)
+        .unwrap();
+    mapper
+        .map(0x40_1000, 0x2000, PageSize::Normal, USER)
+        .unwrap();
+    mapper
+        .map(0x7FFF_0000_0000, 0x3000, PageSize::Normal, USER)
+        .unwrap(); // other PDPT
+    mapper
+        .map(HIGH, 0x9000, PageSize::Normal, KERNEL_CODE)
+        .unwrap();
+
+    let mut released = Vec::new();
+    mapper.release_lower_half(|frame| released.push(frame));
+
+    let pages: Vec<_> = released
+        .iter()
+        .filter(|r| matches!(r, Released::Page(_)))
+        .collect();
+    let tables = released.len() - pages.len();
+    assert_eq!(
+        pages,
+        [
+            &Released::Page(0x1000),
+            &Released::Page(0x2000),
+            &Released::Page(0x3000)
+        ]
+    );
+    assert_eq!(tables, 6); // two chains of PDPT + PD + PT
+    assert_eq!(mapper.translate(0x40_0000), None);
+    assert!(mapper.translate(HIGH).is_some(), "upper half must survive");
+}

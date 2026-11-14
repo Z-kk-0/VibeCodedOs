@@ -60,7 +60,7 @@ pub struct Translation {
 
 pub struct Mapper<M> {
     pub(crate) root: u64,
-    memory: M,
+    pub(crate) memory: M,
     use_no_execute: bool,
 }
 

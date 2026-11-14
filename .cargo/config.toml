@@ -2,7 +2,11 @@
 # Build tool: `cargo xtask help` (see xtask/src/main.rs).
 xtask = "run --quiet --package xtask --"
 
-# Where the loader finds the kernel ELF to embed (DECISIONS.md, 004).
-# `cargo xtask build` sets this explicitly, also for release builds.
+# Build outputs that get embedded at compile time. `cargo xtask build` sets
+# both explicitly (also for release builds); these defaults keep plain
+# `cargo clippy` working.
 [env]
+# The kernel ELF inside the loader (DECISIONS.md, 004).
 HEMATITE_KERNEL_ELF = { value = "target/x86_64-unknown-none/debug/kernel", relative = true }
+# The folder with the user programs inside the kernel (kernel/src/programs.rs).
+HEMATITE_PROGRAMS = { value = "target/x86_64-unknown-none/debug", relative = true }

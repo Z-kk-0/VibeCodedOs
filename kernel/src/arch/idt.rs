@@ -27,6 +27,9 @@ pub unsafe fn init() {
         };
         *gate = Gate::new(stub_address(vector), KERNEL_CODE, stack);
     }
+    // The only door user programs may knock on themselves: system calls.
+    let syscall = usize::from(abi::SYSCALL_VECTOR);
+    gates[syscall] = gates[syscall].callable_from_user_mode();
 
     #[repr(C, packed)]
     struct Pointer {

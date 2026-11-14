@@ -1,0 +1,8 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2024"
+description = "The first Hematite user program: greets, sleeps, exits"
+
+[dependencies]
+userlib = { path = "../../userlib" }

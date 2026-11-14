@@ -1,6 +1,6 @@
 //! The saved CPU state of an interrupted piece of code.
 
-use crate::arch::gdt::{KERNEL_CODE, KERNEL_DATA};
+use crate::arch::gdt::{KERNEL_CODE, KERNEL_DATA, USER_CODE, USER_DATA};
 
 /// Everything the CPU and our stub saved, lowest address first.
 /// Must match the push order in `stubs.rs`.
@@ -54,5 +54,23 @@ impl InterruptFrame {
             ss: u64::from(KERNEL_DATA),
             ..Self::default()
         }
+    }
+
+    /// Same for a user program: `iretq` with user selectors drops the CPU to
+    /// ring 3, at `entry`, on the program's own stack.
+    pub fn for_new_user_task(entry: u64, stack_pointer: u64) -> Self {
+        Self {
+            rip: entry,
+            cs: u64::from(USER_CODE),
+            rflags: INTERRUPTS_ON,
+            rsp: stack_pointer,
+            ss: u64::from(USER_DATA),
+            ..Self::default()
+        }
+    }
+
+    /// Whether the interrupted code was a user program (privilege level 3).
+    pub fn came_from_user_mode(&self) -> bool {
+        self.cs & 3 == 3
     }
 }

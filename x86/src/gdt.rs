@@ -15,17 +15,25 @@ const CODE_OR_DATA: u64 = 1 << 44;
 const PRESENT: u64 = 1 << 47;
 const LONG_MODE: u64 = 1 << 53;
 const AVAILABLE_64_BIT_TSS: u64 = 0x9 << 40;
+/// Descriptor privilege level 3: usable from user mode.
+const USER_PRIVILEGE: u64 = 3 << 45;
 
 /// Base and limit are ignored in 64-bit mode, so they stay 0. The accessed
 /// bit is preset so the CPU never needs to write to the GDT.
 pub const KERNEL_CODE_DESCRIPTOR: u64 =
     PRESENT | CODE_OR_DATA | EXECUTABLE | WRITABLE_OR_READABLE | LONG_MODE | ACCESSED;
 pub const KERNEL_DATA_DESCRIPTOR: u64 = PRESENT | CODE_OR_DATA | WRITABLE_OR_READABLE | ACCESSED;
+pub const USER_CODE_DESCRIPTOR: u64 = KERNEL_CODE_DESCRIPTOR | USER_PRIVILEGE;
+pub const USER_DATA_DESCRIPTOR: u64 = KERNEL_DATA_DESCRIPTOR | USER_PRIVILEGE;
+
+/// A selector's lowest two bits: the privilege level it is used with.
+pub const USER_REQUESTED_PRIVILEGE: u16 = 3;
 
 #[repr(C, packed(4))]
 pub struct TaskStateSegment {
     reserved_0: u32,
-    /// Stacks for switching from user mode (ring 3) to rings 0–2. Unused yet.
+    /// Stacks the CPU switches to when an interrupt arrives in user mode
+    /// (ring 3); index = target ring. We only use ring 0.
     privilege_stacks: [u64; 3],
     reserved_1: u64,
     /// Up to 7 known-good stacks an IDT entry can ask for (IST 1–7).
@@ -47,6 +55,11 @@ impl TaskStateSegment {
             reserved_3: 0,
             io_map_base: size_of::<TaskStateSegment>() as u16,
         }
+    }
+
+    /// The kernel stack to use when an interrupt arrives in user mode.
+    pub fn set_kernel_stack(&mut self, stack_top: u64) {
+        self.privilege_stacks[0] = stack_top;
     }
 
     /// `index` is 1-based, as in IDT entries (0 there means "no switch").
@@ -76,6 +89,16 @@ mod tests {
         // Access byte 0x9B / 0x93, flags nibble 0x2 (= long mode) for code.
         assert_eq!(KERNEL_CODE_DESCRIPTOR, 0x0020_9B00_0000_0000);
         assert_eq!(KERNEL_DATA_DESCRIPTOR, 0x0000_9300_0000_0000);
+        // Same with privilege level 3: access bytes 0xFB / 0xF3.
+        assert_eq!(USER_CODE_DESCRIPTOR, 0x0020_FB00_0000_0000);
+        assert_eq!(USER_DATA_DESCRIPTOR, 0x0000_F300_0000_0000);
+    }
+
+    #[test]
+    fn kernel_stack_goes_into_the_ring_0_slot() {
+        let mut tss = TaskStateSegment::empty();
+        tss.set_kernel_stack(0x1234_5000);
+        assert_eq!({ tss.privilege_stacks }[0], 0x1234_5000);
     }
 
     #[test]

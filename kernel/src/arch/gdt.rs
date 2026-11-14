@@ -4,12 +4,19 @@
 
 use core::arch::asm;
 use core::mem::size_of;
-use x86::gdt::{KERNEL_CODE_DESCRIPTOR, KERNEL_DATA_DESCRIPTOR, TaskStateSegment, tss_descriptor};
+use x86::gdt::{
+    KERNEL_CODE_DESCRIPTOR, KERNEL_DATA_DESCRIPTOR, TaskStateSegment, USER_CODE_DESCRIPTOR,
+    USER_DATA_DESCRIPTOR, USER_REQUESTED_PRIVILEGE, tss_descriptor,
+};
 
-/// Selectors = byte offsets into the GDT.
+/// Selectors = byte offsets into the GDT. User data comes before user code:
+/// the order the `sysret` instruction expects, should we use it one day.
 pub const KERNEL_CODE: u16 = 0x08;
 pub const KERNEL_DATA: u16 = 0x10;
-const TASK_STATE: u16 = 0x18;
+pub const USER_DATA: u16 = 0x18 | USER_REQUESTED_PRIVILEGE;
+pub const USER_CODE: u16 = 0x20 | USER_REQUESTED_PRIVILEGE;
+const TASK_STATE: u16 = 0x28;
+const GDT_ENTRIES: usize = 7;
 
 /// Interrupt Stack Table slot (1-based) used for double faults.
 pub const DOUBLE_FAULT_STACK_INDEX: u8 = 1;
@@ -27,8 +34,8 @@ struct Stack([u8; DOUBLE_FAULT_STACK_SIZE]);
 /// so its handler gets a stack of its own.
 static mut DOUBLE_FAULT_STACK: Stack = Stack([0; DOUBLE_FAULT_STACK_SIZE]);
 static mut TSS: TaskStateSegment = TaskStateSegment::empty();
-/// Null, kernel code, kernel data, TSS (takes two slots).
-static mut GDT: [u64; 5] = [0; 5];
+/// Null, kernel code + data, user data + code, TSS (takes two slots).
+static mut GDT: [u64; GDT_ENTRIES] = [0; GDT_ENTRIES];
 
 /// # Safety
 /// Call once, with interrupts disabled.
@@ -46,12 +53,28 @@ pub unsafe fn init() {
             0,
             KERNEL_CODE_DESCRIPTOR,
             KERNEL_DATA_DESCRIPTOR,
+            USER_DATA_DESCRIPTOR,
+            USER_CODE_DESCRIPTOR,
             tss_low,
             tss_high,
         ]);
 
-        load(gdt as u64, size_of::<[u64; 5]>());
+        load(gdt as u64, size_of::<[u64; GDT_ENTRIES]>());
     }
+}
+
+/// Tells the CPU which stack to switch to when an interrupt arrives while
+/// user code runs – the kernel stack of the task about to run.
+///
+/// # Safety
+/// Interrupts must be off (the scheduler calls this mid-switch), and
+/// `stack_top` must be the top of a valid kernel stack.
+pub unsafe fn set_kernel_stack(stack_top: u64) {
+    // SAFETY: with interrupts off nobody else touches the TSS; the CPU only
+    // reads this field on the next ring 3 → ring 0 transition.
+    let tss = &raw mut TSS;
+    // SAFETY: see above.
+    unsafe { (*tss).set_kernel_stack(stack_top) };
 }
 
 /// Activates the GDT, reloads every segment register, loads the TSS.

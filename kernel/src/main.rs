@@ -12,8 +12,10 @@ mod print;
 
 mod arch;
 mod memory;
+mod programs;
 mod serial;
 mod sync;
+mod syscall;
 mod task;
 mod time;
 
@@ -50,6 +52,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     task::init();
     task::check();
+    task::check_user_programs();
 
     println!("Hematite kernel ready.");
 
