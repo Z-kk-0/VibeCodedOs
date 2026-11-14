@@ -131,9 +131,10 @@ extern "sysv64" fn ap_entry(core: &'static PerCore, double_fault_stack_top: u64)
         cpu::set_page_table_root(paging::kernel_root());
         gdt::init(core, double_fault_stack_top);
         idt::load();
+        apic::enable_on_started_core();
     }
-    // From here on `this_core()` works, so this core can take part in
-    // shootdowns – before it allocates anything.
+    // From here on `this_core()` works and the APIC takes IPIs, so this
+    // core can take part in shootdowns – before it allocates anything.
     per_core::set_online(core);
     crate::other_core_main()
 }
@@ -161,7 +162,7 @@ pub fn stopping() -> bool {
 
 /// Leaves scheduling and shootdowns for good.
 pub fn stop_this_core() -> ! {
-    if per_core::online_cores() != 0 {
+    if !per_core::online_cores().is_empty() {
         per_core::set_offline(this_core());
     }
     cpu::halt_forever()

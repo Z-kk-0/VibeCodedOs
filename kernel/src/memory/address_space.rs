@@ -3,17 +3,18 @@
 
 use super::paging::{LOCK, PROCESSES_EXIST, UPPER_HALF_ROOT_ENTRIES, kernel_root, tables};
 use super::{allocate_frame, free_frame, physical_to_pointer};
-use crate::arch::{self, CoreMask};
+use crate::arch;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use frame_table::FrameNumber;
 use paging::{Flags, MapError, PAGE_SIZE, PageSize, PageTable, Released, Translation};
+use scheduling::cores::AtomicCoreSet;
 
 pub struct AddressSpace {
     root: u64,
     /// The cores that have this space loaded in CR3 right now: the ones
     /// whose TLBs must forget a mapping when it changes (DECISIONS.md, 019).
-    active_cores: AtomicU64,
+    active_cores: AtomicCoreSet,
 }
 
 impl AddressSpace {
@@ -34,7 +35,7 @@ impl AddressSpace {
         }
         Some(Self {
             root,
-            active_cores: AtomicU64::new(0),
+            active_cores: AtomicCoreSet::new(),
         })
     }
 
@@ -45,14 +46,14 @@ impl AddressSpace {
 
     /// The task switch calls this right *before* loading this space on
     /// `core`: from then on, changes reach that core's TLB.
-    pub fn mark_active(&self, core: CoreMask) {
-        self.active_cores.fetch_or(core, Ordering::SeqCst);
+    pub fn mark_active(&self, core: usize) {
+        self.active_cores.insert(core);
     }
 
     /// The task switch calls this right *after* loading another space on
     /// `core` – loading CR3 flushed its TLB, so it needs no more flushes.
-    pub fn mark_inactive(&self, core: CoreMask) {
-        self.active_cores.fetch_and(!core, Ordering::SeqCst);
+    pub fn mark_inactive(&self, core: usize) {
+        self.active_cores.remove(core);
     }
 
     /// Maps a fresh, zeroed frame at `virtual_address`; returns the frame.
@@ -82,7 +83,7 @@ impl AddressSpace {
         if was_mapped {
             // A core may still hold the old permissions of this page. SeqCst
             // orders this read after the table write (see `mark_active`).
-            let cores = self.active_cores.load(Ordering::SeqCst);
+            let cores = self.active_cores.load();
             arch::flush_pages_on(cores, virtual_address, 1);
         }
         Ok(())
@@ -104,7 +105,7 @@ impl AddressSpace {
                 tables.unmap(page)
             };
         }
-        let cores = self.active_cores.load(Ordering::SeqCst);
+        let cores = self.active_cores.load();
         arch::flush_pages_on(cores, start, pages as u64);
         // Only now no core can still be walking them.
         for table in empty_tables {
@@ -121,9 +122,8 @@ impl AddressSpace {
 impl Drop for AddressSpace {
     /// Gives every page and table of the lower half back, then the root.
     fn drop(&mut self) {
-        assert_eq!(
-            self.active_cores.load(Ordering::SeqCst),
-            0,
+        assert!(
+            self.active_cores.is_empty(),
             "freeing an address space that a core still uses"
         );
         let _guard = LOCK.lock();

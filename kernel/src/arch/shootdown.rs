@@ -13,10 +13,11 @@
 
 use super::apic;
 use super::cpu;
-use super::per_core::{CoreMask, cores_in, online_cores, this_core};
+use super::per_core::{CoreSet, cores_in, online_cores, this_core};
 use crate::sync::SpinLock;
 use core::sync::atomic::{AtomicU64, Ordering};
 use paging::PAGE_SIZE;
+use scheduling::cores::AtomicCoreSet;
 use x86::apic::Ipi;
 
 pub const SHOOTDOWN_VECTOR: u8 = 0x40;
@@ -24,21 +25,23 @@ pub const SHOOTDOWN_VECTOR: u8 = 0x40;
 /// One shootdown at a time. Taking it may serve other cores' requests
 /// (it's a `SpinLock`), so two cores can never wait for each other here.
 static SENDING: SpinLock<()> = SpinLock::new(());
-/// The pages to flush, valid while `PENDING` isn't 0.
+/// The pages to flush, valid while `PENDING` isn't empty.
 static REQUEST_START: AtomicU64 = AtomicU64::new(0);
 static REQUEST_PAGES: AtomicU64 = AtomicU64::new(0);
 /// From this many pages on, forgetting everything (reloading CR3) is
 /// cheaper than `invlpg` page by page.
 const FLUSH_ALL_FROM: u64 = 32;
+/// How long to wait for a core before sending it the IPI again.
+const RESEND_AFTER_SPINS: u64 = 100_000;
 /// Cores that still have to flush for the current request.
-static PENDING: AtomicU64 = AtomicU64::new(0);
+static PENDING: AtomicCoreSet = AtomicCoreSet::new();
 /// How many shootdowns reached other cores – for the boot check.
 static SENT: AtomicU64 = AtomicU64::new(0);
 
 /// Makes the cores in `cores` forget the translations of `pages` pages from
 /// `start` – one request for the whole range. This core flushes too if
 /// it's in `cores`. Returns once every core has done it.
-pub fn flush_pages(cores: CoreMask, start: u64, pages: u64) {
+pub fn flush_pages(cores: CoreSet, start: u64, pages: u64) {
     flush(cores, start, pages);
 }
 
@@ -47,36 +50,47 @@ pub fn flush_kernel_pages(start: u64, pages: u64) {
     flush(online_cores(), start, pages);
 }
 
-fn flush(cores: CoreMask, start: u64, pages: u64) {
+fn flush(cores: CoreSet, start: u64, pages: u64) {
     if pages == 0 {
         return;
     }
     let online = online_cores();
-    if online == 0 {
+    if online.is_empty() {
         // Early boot: only this core runs, and its per-core data may not
         // even exist yet.
         flush_here(start, pages);
         return;
     }
-    let me = this_core().bit();
-    if cores & me != 0 {
+    let me = this_core().index;
+    if cores.contains(me) {
         flush_here(start, pages);
     }
-    let others = cores & online & !me;
-    if others == 0 {
+    let others = cores.and(online).without(CoreSet::only(me));
+    if others.is_empty() {
         return;
     }
 
     let _one_at_a_time = SENDING.lock();
     REQUEST_START.store(start, Ordering::Relaxed);
     REQUEST_PAGES.store(pages, Ordering::Relaxed);
-    // Release: whoever sees its bit also sees the request.
-    PENDING.store(others, Ordering::Release);
+    // SeqCst: whoever sees its bit also sees the request.
+    PENDING.store(others);
     for core in cores_in(others) {
         let apic_id = core.apic_id.load(Ordering::Relaxed);
         apic::send(Ipi::fixed(apic_id, SHOOTDOWN_VECTOR));
     }
-    while PENDING.load(Ordering::Acquire) != 0 {
+    // An IPI can get lost – e.g. at a core whose APIC is still switching
+    // on while it starts. So ask again now and then; serving twice is
+    // harmless (`serve_pending` checks the bit).
+    let mut spins: u64 = 0;
+    while !PENDING.is_empty() {
+        spins += 1;
+        if spins.is_multiple_of(RESEND_AFTER_SPINS) {
+            for core in cores_in(PENDING.load()) {
+                let apic_id = core.apic_id.load(Ordering::Relaxed);
+                apic::send(Ipi::fixed(apic_id, SHOOTDOWN_VECTOR));
+            }
+        }
         core::hint::spin_loop();
     }
     SENT.fetch_add(1, Ordering::Relaxed);
@@ -89,22 +103,22 @@ pub fn sent_count() -> u64 {
 
 /// Whether some core waits for a flush – cheap enough for a spin loop.
 pub fn any_pending() -> bool {
-    PENDING.load(Ordering::Relaxed) != 0
+    !PENDING.is_empty()
 }
 
 /// Does this core's part of the current shootdown, if it has one. Called
 /// by the shootdown interrupt and by spinning locks.
 pub fn serve_pending() {
-    let me = this_core().bit();
-    if PENDING.load(Ordering::Acquire) & me == 0 {
+    let me = this_core().index;
+    if !PENDING.contains(me) {
         return;
     }
     flush_here(
         REQUEST_START.load(Ordering::Relaxed),
         REQUEST_PAGES.load(Ordering::Relaxed),
     );
-    // Release: our flush is done before the sender sees our bit gone.
-    PENDING.fetch_and(!me, Ordering::Release);
+    // SeqCst: our flush is done before the sender sees our bit gone.
+    PENDING.remove(me);
 }
 
 fn flush_here(start: u64, pages: u64) {

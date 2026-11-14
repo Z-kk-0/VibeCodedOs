@@ -14,16 +14,18 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
    - macOS: `brew install qemu` (firmware included)
 
    If `cargo xtask` can't find them, set `HEMATITE_QEMU` / `HEMATITE_OVMF` to the full paths.
-   QEMU gets 4 cores; `HEMATITE_CORES=1` (up to 64) changes that for `run` and `boot-test`.
+   QEMU gets 4 cores; `HEMATITE_CORES=1` (up to 255) changes that for `run` and `boot-test`;
+   `--many-cores` boots 80 cores on a CPU with x2APIC.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
-| `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot test, crash test. Must be green before a commit. |
+| `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot tests (4 cores, and 80 cores with x2APIC), crash tests. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
 | `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log. `--crash` builds a kernel that page-faults on purpose, `--crash-stack` one that overflows its stack (the guard page must catch it). |
+| `cargo xtask symbolize <address>...` | Names the kernel function each hex address lies in (debug build). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
 
@@ -86,4 +88,7 @@ the edges, code and docs in English.
   started with (by `init`) or received. Data goes in memory objects, never in messages. The `log` service
   must not use `println!` – that would be a call to itself.
 - **Debugging a hang:** `cargo xtask run`, then look at the last serial line. QEMU's `-d int`
-  (add it in `xtask/src/qemu.rs`) logs every interrupt and exception.
+  (add it in `xtask/src/qemu.rs`) logs every interrupt and exception. If it hangs silently, add
+  `-monitor stdio` to QEMU, type `info registers -a`, and pass the cores' `RIP`s (and any register
+  that looks like a kernel address, e.g. the lock in `RDI`) to `cargo xtask symbolize`. Many
+  cores at one `SpinLock::lock` and one elsewhere is a lock someone never let go.

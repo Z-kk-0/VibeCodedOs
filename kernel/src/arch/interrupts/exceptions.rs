@@ -53,8 +53,9 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
         return task::end_current(frame, Exit::Killed(vector));
     }
-    arch::stop_other_cores();
+    // Report first: if stopping the others goes wrong too, the reason is out.
     report(frame);
+    arch::stop_other_cores();
     arch::stop_this_core();
 }
 

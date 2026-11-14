@@ -25,6 +25,26 @@ impl<T> SpinLock<T> {
         }
     }
 
+    /// The lock if it's free right now, without waiting.
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
+        let interrupts_were_on = cpu::disable_interrupts();
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(SpinLockGuard {
+                lock: self,
+                interrupts_were_on,
+            });
+        }
+        if interrupts_were_on {
+            // SAFETY: they were on before, so every handler is set up.
+            unsafe { cpu::enable_interrupts() };
+        }
+        None
+    }
+
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
         let interrupts_were_on = cpu::disable_interrupts();
         while self

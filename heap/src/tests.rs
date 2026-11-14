@@ -200,11 +200,13 @@ fn size_classes_cover_the_boundaries() {
 }
 
 #[test]
-fn empty_multi_page_slabs_go_back_at_once() {
+fn allocate_free_loops_dont_churn_pages() {
     let mut source = pages(20);
     let mut heap = Heap::new(&mut source);
-    let block = heap.allocate(layout(2048, 8));
-    assert_eq!(heap.pages_mapped(), 8);
-    unsafe { heap.deallocate(block, layout(2048, 8)) };
-    assert_eq!(heap.pages_mapped(), 0);
+    for _ in 0..100 {
+        let block = heap.allocate(layout(2048, 8));
+        unsafe { heap.deallocate(block, layout(2048, 8)) };
+    }
+    assert_eq!(heap.pages_mapped(), 8, "the one empty slab stays");
+    assert_eq!(source.unmapped, 0);
 }

@@ -16,7 +16,7 @@ pub use checks::check;
 pub use context::TaskContext;
 pub use exits::{Exit, exit_of, forget_exit, wait};
 pub use program::{grow_stack, load_program, spawn_program};
-pub use switch::switch;
+pub use switch::{switch, switch_on_tick};
 
 use crate::arch::{self, InterruptFrame, cpu};
 use crate::sync::SpinLock;

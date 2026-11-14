@@ -5,11 +5,11 @@ use crate::sync::SpinLock;
 use crate::{arch, time};
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use scheduling::cores::AtomicCoreSet;
 
 static LOG: SpinLock<Vec<u8>> = SpinLock::new(Vec::new());
 /// One bit per core a busy task ran on.
-static CORES_USED: AtomicU64 = AtomicU64::new(0);
+static CORES_USED: AtomicCoreSet = AtomicCoreSet::new();
 
 /// Busy tasks that never give up the CPU voluntarily – they busy-wait – and
 /// one that sleeps. If the busy tasks' letters interleave, they really run
@@ -22,7 +22,7 @@ pub fn check() {
     let busy = [b'A', b'B', b'C', b'D'].map(|letter| {
         spawn("busy", move || {
             for _ in 0..ROUNDS {
-                CORES_USED.fetch_or(1 << arch::core_index(), Ordering::Relaxed);
+                CORES_USED.insert(arch::core_index());
                 LOG.lock().push(letter);
                 busy_wait_for_next_tick();
             }
@@ -44,7 +44,7 @@ pub fn check() {
         "tasks did not interleave: {log}"
     );
     assert!(log.contains('z'), "the sleeper never woke up: {log}");
-    let cores_used = CORES_USED.load(Ordering::Relaxed).count_ones() as usize;
+    let cores_used = CORES_USED.load().len();
     assert!(
         cores_used > 1 || core_count() == 1,
         "{} cores, but all busy tasks ran on one: {log}",

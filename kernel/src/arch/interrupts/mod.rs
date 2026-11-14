@@ -63,7 +63,7 @@ fn dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                 crate::time::on_tick();
             }
             apic::end_of_interrupt();
-            return crate::task::switch(frame);
+            return crate::task::switch_on_tick(frame);
         }
         YIELD_VECTOR => return crate::task::switch(frame),
         SHOOTDOWN_VECTOR => {

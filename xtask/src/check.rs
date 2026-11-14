@@ -38,13 +38,18 @@ pub fn everything(options: Options) -> Result {
     step("Unit tests", "test")?;
 
     if !options.quick {
-        for (name, crash) in [
-            ("Boot test", Crash::None),
-            ("Crash test: page fault", Crash::PageFault),
-            ("Crash test: stack overflow", Crash::StackOverflow),
+        for (name, crash, many_cores) in [
+            ("Boot test", Crash::None, false),
+            ("Boot test: 80 cores, x2APIC", Crash::None, true),
+            ("Crash test: page fault", Crash::PageFault, false),
+            ("Crash test: stack overflow", Crash::StackOverflow, false),
         ] {
             println!("\n=== {name} ===");
-            qemu::boot_test(Options { crash, ..options })?;
+            qemu::boot_test(Options {
+                crash,
+                many_cores,
+                ..options
+            })?;
         }
     }
     println!("\nALL CHECKS PASSED");

@@ -16,10 +16,12 @@ const BOOT_TEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Hematite must use every core (DECISIONS.md, ground rules), so QEMU gets
 /// several. `HEMATITE_CORES` overrides it, e.g. to try 1 or 8.
 const DEFAULT_CORES: usize = 4;
+/// `--many-cores`: more than fit into one 64-bit mask, in x2APIC mode.
+const MANY_CORES: usize = 80;
 
 pub fn run(options: Options) -> Result {
     let esp = build(options)?;
-    let mut qemu = qemu_command(&esp)?;
+    let mut qemu = qemu_command(&esp, options)?;
     qemu.args(["-serial", "stdio"]);
     run_command(&mut qemu)
 }
@@ -30,7 +32,7 @@ pub fn boot_test(options: Options) -> Result {
     let log_path = root().join("build").join("serial.log");
     let _ = fs::remove_file(&log_path);
 
-    let mut qemu = qemu_command(&esp)?;
+    let mut qemu = qemu_command(&esp, options)?;
     qemu.args(["-display", "none", "-serial"])
         .arg(format!("file:{}", log_path.display()))
         .stdout(Stdio::null());
@@ -44,7 +46,7 @@ pub fn boot_test(options: Options) -> Result {
     let log = read_log(&log_path);
     println!("{log}");
     // A normal boot must also have started every core.
-    let cores_marker = format!("{} cores online.", cores()?);
+    let cores_marker = format!("{} cores online.", cores(options)?);
     if found && options.crash == Crash::None && !log.contains(&cores_marker) {
         return Err(format!("boot test failed: no '{cores_marker}'"));
     }
@@ -81,13 +83,19 @@ fn read_log(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn qemu_command(esp: &Path) -> Result<Command> {
+fn qemu_command(esp: &Path, options: Options) -> Result<Command> {
     let qemu = find_qemu()?;
     let firmware = find_firmware(&qemu)?;
     let mut command = Command::new(&qemu);
+    let memory = if options.many_cores { "512M" } else { "256M" };
     command
-        .args(["-machine", "q35", "-m", "256M", "-net", "none"])
-        .args(["-smp", &cores()?.to_string()])
+        .args(["-machine", "q35", "-m", memory, "-net", "none"])
+        .args(["-smp", &cores(options)?.to_string()]);
+    if options.many_cores {
+        // QEMU's default CPU has no x2APIC; this one does.
+        command.args(["-cpu", "qemu64,+x2apic"]);
+    }
+    command
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -99,13 +107,16 @@ fn qemu_command(esp: &Path) -> Result<Command> {
     Ok(command)
 }
 
-fn cores() -> Result<usize> {
+fn cores(options: Options) -> Result<usize> {
+    if options.many_cores {
+        return Ok(MANY_CORES);
+    }
     match env::var("HEMATITE_CORES") {
         Ok(value) => value
             .parse()
             .ok()
-            .filter(|count| (1..=64).contains(count))
-            .ok_or_else(|| format!("HEMATITE_CORES must be 1 to 64, not '{value}'")),
+            .filter(|count| (1..=255).contains(count))
+            .ok_or_else(|| format!("HEMATITE_CORES must be 1 to 255, not '{value}'")),
         Err(_) => Ok(DEFAULT_CORES),
     }
 }

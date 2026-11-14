@@ -6,6 +6,7 @@
 mod build;
 mod check;
 mod qemu;
+mod symbols;
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -18,6 +19,7 @@ Commands:
   run         Build and boot in a QEMU window (serial log in this terminal)
   boot-test   Boot headless and check the serial log
   test        Every check: formatting, clippy, unit tests, boot tests
+  symbolize   Name the kernel functions at hex addresses (e.g. RIPs of a hang)
 
 Options:
   --release   Optimized build (build, run, boot-test)
@@ -25,6 +27,7 @@ Options:
   --crash-stack  Kernel overflows its stack; boot-test expects the guard page
               to catch it (reported as a double fault)
   --quick     test: skip the QEMU boot tests
+  --many-cores  run, boot-test: 80 cores, CPU with x2APIC
 
 Environment:
   HEMATITE_QEMU   path to qemu-system-x86_64 (default: PATH, usual install dirs)
@@ -38,6 +41,8 @@ pub struct Options {
     pub release: bool,
     pub crash: Crash,
     pub quick: bool,
+    /// Boot with 80 cores and an x2APIC CPU.
+    pub many_cores: bool,
 }
 
 /// A kernel that crashes on purpose, to check that crashes are reported.
@@ -74,6 +79,10 @@ impl Crash {
 fn main() -> ExitCode {
     let mut arguments = std::env::args().skip(1);
     let command = arguments.next().unwrap_or_default();
+    if command == "symbolize" {
+        let addresses: Vec<String> = arguments.collect();
+        return finish(symbols::symbolize(&addresses));
+    }
     let mut options = Options::default();
     for argument in arguments {
         match argument.as_str() {
@@ -81,6 +90,7 @@ fn main() -> ExitCode {
             "--crash" => options.crash = Crash::PageFault,
             "--crash-stack" => options.crash = Crash::StackOverflow,
             "--quick" => options.quick = true,
+            "--many-cores" => options.many_cores = true,
             other => return usage_error(&format!("unknown option '{other}'")),
         }
     }
@@ -96,6 +106,10 @@ fn main() -> ExitCode {
         }
         other => return usage_error(&format!("unknown command '{other}'")),
     };
+    finish(result)
+}
+
+fn finish(result: Result) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

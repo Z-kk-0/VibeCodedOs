@@ -39,8 +39,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     let timer = arch::start_timer(time::TICKS_PER_SECOND);
     println!(
-        "APIC timer counts {} steps/s, interrupting {} times/s.",
-        timer.steps_per_second, timer.interrupts_per_second
+        "APIC ({}) timer counts {} steps/s, interrupting {} times/s.",
+        arch::apic_mode(),
+        timer.steps_per_second,
+        timer.interrupts_per_second
     );
     // Hangs here if timer interrupts don't arrive – the boot test would notice.
     time::sleep_ticks(10);

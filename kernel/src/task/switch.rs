@@ -1,19 +1,38 @@
 //! The task switch itself (DECISIONS.md, 017 and 019): save the interrupted
 //! task's frame, pick the next task for this core, prepare the core for it.
 
-use super::SCHEDULER;
 use super::context::TaskContext;
+use super::{SCHEDULER, Tasks};
 use crate::arch::{self, InterruptFrame, cpu};
 use crate::memory::AddressSpace;
+use crate::sync::SpinLockGuard;
 use crate::time;
 use core::sync::atomic::Ordering;
 use scheduling::CoreId;
 
-/// Called by the timer and yield interrupts with the interrupted task's
-/// frame. Returns the frame of the task to continue with.
+/// Called by the yield interrupt and every voluntary switch (sleep, exit,
+/// IPC) with the interrupted task's frame. Returns the frame of the task
+/// to continue with.
 pub fn switch(frame: *mut InterruptFrame) -> *mut InterruptFrame {
+    switch_with(SCHEDULER.lock(), frame)
+}
+
+/// Called by the timer: a chance to switch, not a duty. If another core
+/// holds the run queue right now, the current task simply keeps running
+/// one more tick – with many cores, waiting here would make every tick a
+/// queue in front of one lock (DECISIONS.md, 022).
+pub fn switch_on_tick(frame: *mut InterruptFrame) -> *mut InterruptFrame {
+    match SCHEDULER.try_lock() {
+        Some(guard) => switch_with(guard, frame),
+        None => frame,
+    }
+}
+
+fn switch_with(
+    mut guard: SpinLockGuard<'_, Option<Tasks>>,
+    frame: *mut InterruptFrame,
+) -> *mut InterruptFrame {
     let core = arch::core_index();
-    let mut guard = SCHEDULER.lock();
     let Some(scheduler) = guard.as_mut() else {
         return frame; // scheduler not started yet
     };
@@ -61,7 +80,6 @@ pub fn switch(frame: *mut InterruptFrame) -> *mut InterruptFrame {
 /// # Safety
 /// Interrupts off, scheduler lock held, `next` about to run on `core`.
 unsafe fn activate(next: &TaskContext, previous_space: Option<&AddressSpace>, core: CoreId) {
-    let core_bit = 1 << core;
     // SAFETY: forwarded to the caller.
     unsafe {
         if next.kernel_stack_top != 0 {
@@ -72,11 +90,11 @@ unsafe fn activate(next: &TaskContext, previous_space: Option<&AddressSpace>, co
             // Active before loading (changes now reach us), inactive after
             // leaving (loading CR3 flushed everything old).
             if let Some(process) = &next.process {
-                process.space.mark_active(core_bit);
+                process.space.mark_active(core);
             }
             cpu::set_page_table_root(root);
             if let Some(space) = previous_space {
-                space.mark_inactive(core_bit);
+                space.mark_inactive(core);
             }
         }
     }

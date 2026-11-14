@@ -135,8 +135,8 @@ last receiving end is gone and keep a generation per badge for `revoke`; queue w
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `heap` | any + host | Heap allocator: size classes in self-aligned slabs (returned when empty) + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
-| `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, freeing exited tasks. Unit-tested. |
-| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, IPIs). Unit-tested. |
+| `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, blocking, freeing exited tasks; core sets for up to 256 cores. Unit-tested. |
+| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
 | `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges. |
 | `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, a heap (`alloc`), `println!`, panic handler. |
@@ -174,9 +174,9 @@ Next, in order (each one a milestone with its own decision entry):
 
 ## Known limits (on purpose, for now)
 
-- Multi-core (DECISIONS 019): at most 64 cores, xAPIC mode only (APIC IDs up to 255; firmware
-  that already switched to x2APIC isn't supported). One run queue lock for all cores; no CPU
-  affinity. One shootdown request at a time (each covers a whole range).
+- Multi-core (DECISIONS 019, 022): at most 256 cores. One run queue lock for all cores (timer
+  ticks skip it when it's taken, so it scales to dozens of cores, but every voluntary switch
+  waits for it); no CPU affinity. One shootdown request at a time (each covers a whole range).
 - Heap addresses are never reused (on purpose, like memory objects; empty page tables are freed).
 - Tasks: no priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task
   still stops the whole machine (in user programs it only ends the program).

@@ -17,7 +17,7 @@ pub mod start;
 pub use apic::TimerSetup;
 pub use gdt::set_kernel_stack;
 pub use interrupts::{InterruptFrame, yield_now};
-pub use per_core::{CoreMask, release_after_switch, this_core_index as core_index};
+pub use per_core::{CoreSet, release_after_switch, this_core_index as core_index};
 pub use shootdown::{
     any_pending as shootdown_pending, sent_count as shootdown_count,
     serve_pending as serve_shootdown,
@@ -84,6 +84,11 @@ pub fn flush_kernel_pages_everywhere(start: u64, pages: u64) {
 }
 
 /// After changing pages of an address space active on `cores`.
-pub fn flush_pages_on(cores: CoreMask, start: u64, pages: u64) {
+pub fn flush_pages_on(cores: CoreSet, start: u64, pages: u64) {
     shootdown::flush_pages(cores, start, pages);
+}
+
+/// How the local APICs are reached: "x2APIC" or "xAPIC".
+pub fn apic_mode() -> &'static str {
+    apic::mode()
 }

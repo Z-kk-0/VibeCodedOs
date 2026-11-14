@@ -18,6 +18,8 @@
 
 extern crate alloc;
 
+pub mod cores;
+
 #[cfg(test)]
 mod tests;
 
@@ -136,6 +138,12 @@ impl<T> RunQueue<T> {
     /// Every task's ID, e.g. to look for ones waiting too long.
     pub fn ids(&self) -> Vec<TaskId> {
         self.tasks.iter().map(|task| task.id).collect()
+    }
+
+    /// The ID of the task at `index` (0 ≤ index < `task_count`) – to walk all
+    /// tasks without allocating, as long as none is added or removed.
+    pub fn id_at(&self, index: usize) -> Option<TaskId> {
+        self.tasks.get(index).map(|task| task.id)
     }
 
     pub fn state(&self, id: TaskId) -> Option<State> {

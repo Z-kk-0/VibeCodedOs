@@ -1,11 +1,23 @@
 //! Local APIC: every CPU core's own interrupt controller, including a timer.
-//! It is controlled through 32-bit registers in a 4 KiB memory window
-//! ("MMIO"). Intel SDM Vol. 3A, §11.4 (base, Table 11-1 register offsets)
-//! and §11.5.4 (timer).
+//! In xAPIC mode it is controlled through 32-bit registers in a 4 KiB
+//! memory window ("MMIO"); in x2APIC mode through model-specific registers,
+//! with 32-bit APIC IDs. Intel SDM Vol. 3A, §11.4 (base, Table 11-1
+//! register offsets), §11.5.4 (timer), §11.12 (x2APIC).
 
 /// Model-specific register holding the APIC's physical base address.
 pub const BASE_MSR: u32 = 0x1B;
 pub const BASE_MSR_ENABLE: u64 = 1 << 11;
+/// Also set: x2APIC mode (registers as MSRs). Needs `BASE_MSR_ENABLE`.
+pub const BASE_MSR_X2APIC: u64 = 1 << 10;
+/// CPUID leaf 1, ECX: the CPU has an x2APIC.
+pub const CPUID_1_ECX_X2APIC: u32 = 1 << 21;
+/// In x2APIC mode the whole interrupt command is one 64-bit MSR.
+pub const X2APIC_INTERRUPT_COMMAND_MSR: u32 = 0x830;
+
+/// The MSR an xAPIC register offset becomes in x2APIC mode.
+pub fn x2apic_msr(register: usize) -> u32 {
+    0x800 + (register >> 4) as u32
+}
 /// Bits 12..52 of the MSR are the page-aligned base address.
 pub const BASE_ADDRESS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
@@ -33,17 +45,30 @@ pub const LVT_TIMER_PERIODIC: u32 = 1 << 17;
 /// The timer counts down at (bus clock / 16). Encoding from SDM Figure 11-10.
 pub const TIMER_DIVIDE_BY_16: u32 = 0b0011;
 
-/// The ID register keeps the APIC ID in its top byte (xAPIC mode).
-pub fn id_from_register(value: u32) -> u32 {
-    value >> 24
+/// In xAPIC mode the ID register keeps the APIC ID in its top byte; in
+/// x2APIC mode it is the whole register.
+pub fn id_from_register(value: u32, x2apic: bool) -> u32 {
+    if x2apic { value } else { value >> 24 }
 }
 
-/// An inter-processor interrupt (IPI), as the two halves of the interrupt
-/// command register. SDM Vol. 3A, §11.6.1 and Figure 11-12.
+/// An inter-processor interrupt (IPI): the command word (`low`) and the
+/// destination APIC ID. SDM Vol. 3A, §11.6.1, Figure 11-12, §11.12.9.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ipi {
-    pub high: u32,
+    pub destination: u32,
     pub low: u32,
+}
+
+impl Ipi {
+    /// The high half of the command register in xAPIC mode (IDs < 256).
+    pub fn xapic_high(self) -> u32 {
+        self.destination << 24
+    }
+
+    /// The command MSR's value in x2APIC mode.
+    pub fn x2apic_value(self) -> u64 {
+        u64::from(self.destination) << 32 | u64::from(self.low)
+    }
 }
 
 /// In the low half: the APIC hasn't sent the last IPI yet.
@@ -67,7 +92,7 @@ impl Ipi {
     /// Interrupt `vector` on every other core.
     pub fn fixed_to_all_others(vector: u8) -> Self {
         Self {
-            high: 0,
+            destination: 0,
             low: ALL_EXCEPT_SELF | DELIVERY_FIXED | LEVEL_ASSERT | u32::from(vector),
         }
     }
@@ -76,7 +101,7 @@ impl Ipi {
     /// interrupts are switched off (the vector field is ignored).
     pub fn nmi_to_all_others() -> Self {
         Self {
-            high: 0,
+            destination: 0,
             low: ALL_EXCEPT_SELF | DELIVERY_NMI | LEVEL_ASSERT,
         }
     }
@@ -101,7 +126,7 @@ impl Ipi {
 
     fn to(apic_id: u32, low: u32) -> Self {
         Self {
-            high: apic_id << 24,
+            destination: apic_id,
             low,
         }
     }
@@ -131,16 +156,24 @@ mod tests {
         assert_eq!(
             Ipi::init(1),
             Ipi {
-                high: 0x0100_0000,
+                destination: 1,
                 low: 0x4500
             }
         );
+        assert_eq!(Ipi::init(1).xapic_high(), 0x0100_0000);
         assert_eq!(Ipi::startup(1, 0x8000).low, 0x4608);
         assert_eq!(Ipi::fixed(3, 0x40).low, 0x4040);
-        assert_eq!(Ipi::fixed(3, 0x40).high, 0x0300_0000);
+        assert_eq!(Ipi::fixed(3, 0x40).xapic_high(), 0x0300_0000);
+        assert_eq!(Ipi::fixed(300, 0x40).x2apic_value(), 300 << 32 | 0x4040);
         assert_eq!(Ipi::fixed_to_all_others(0x41).low, 0xC4041);
         assert_eq!(Ipi::nmi_to_all_others().low, 0xC4400);
-        assert_eq!(id_from_register(0x0200_0000), 2);
+        assert_eq!(id_from_register(0x0200_0000, false), 2);
+        assert_eq!(id_from_register(300, true), 300);
+        assert_eq!(
+            x2apic_msr(register::INTERRUPT_COMMAND_LOW),
+            X2APIC_INTERRUPT_COMMAND_MSR
+        );
+        assert_eq!(x2apic_msr(0xB0), 0x80B, "end of interrupt");
     }
 
     #[test]

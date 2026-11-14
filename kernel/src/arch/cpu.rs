@@ -143,3 +143,10 @@ pub fn efer() -> u64 {
     // SAFETY: EFER exists on every x86_64 CPU.
     unsafe { read_msr(EFER) }
 }
+
+/// Whether the CPU has an x2APIC (CPUID leaf 1, ECX bit 21).
+pub fn has_x2apic() -> bool {
+    // CPUID leaf 1 exists on every x86_64 CPU and has no side effects.
+    let features = core::arch::x86_64::__cpuid(1);
+    features.ecx & x86::apic::CPUID_1_ECX_X2APIC != 0
+}

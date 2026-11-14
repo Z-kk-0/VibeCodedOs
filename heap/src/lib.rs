@@ -7,8 +7,8 @@
 //! block(s), so the slab of any block is found by masking its address –
 //! freeing is O(1) and needs no table. Free blocks store the link to the
 //! next free block in their own first bytes. A slab that becomes empty goes
-//! back to the page source (one empty single-page slab per class is kept, so
-//! a loop of allocate/free doesn't map and unmap all the time).
+//! back to the page source (one empty slab per class is kept, so a loop of
+//! allocate/free doesn't map and unmap all the time).
 //!
 //! Bigger requests get whole pages of their own, aligned as asked, which go
 //! back when freed. Where pages come from is up to the caller
@@ -115,10 +115,10 @@ impl<S: PageSource> Heap<S> {
                 }
                 // SAFETY: as above.
                 let empty = unsafe { (*slab).is_empty() };
-                // Keep one small empty slab per class against map/unmap churn;
-                // give back any further one, and multi-page ones right away.
-                let keep =
-                    slab_bytes(class) == PAGE_SIZE && !self.partial[class].has_more_than_one();
+                // Keep one empty slab per class: a loop that allocates and frees
+                // one block must not map and unmap all the time – in the kernel
+                // every unmap is a shootdown to every core. Give back the rest.
+                let keep = !self.partial[class].has_more_than_one();
                 if empty && !keep {
                     self.partial[class].remove(slab);
                     self.release_slab(class, slab);

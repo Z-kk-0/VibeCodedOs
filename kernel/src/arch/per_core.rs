@@ -11,12 +11,10 @@ use super::gdt::GDT_ENTRIES;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use scheduling::cores::AtomicCoreSet;
+pub use scheduling::cores::{CoreSet, MAX_CORES};
 use x86::gdt::TaskStateSegment;
-
-/// A set of cores, one bit per core index. 64 is plenty for now.
-pub type CoreMask = u64;
-pub const MAX_CORES: usize = CoreMask::BITS as usize;
 
 #[repr(C)]
 pub struct PerCore {
@@ -44,7 +42,7 @@ pub(super) static BOOT_CORE: PerCore = PerCore::new(0);
 static CORES: [AtomicPtr<PerCore>; MAX_CORES] = [const { AtomicPtr::new(null_mut()) }; MAX_CORES];
 static CORE_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Cores that finished starting and take part in scheduling and shootdowns.
-static ONLINE: AtomicU64 = AtomicU64::new(0);
+static ONLINE: AtomicCoreSet = AtomicCoreSet::new();
 
 impl PerCore {
     pub const fn new(index: usize) -> Self {
@@ -55,10 +53,6 @@ impl PerCore {
             apic_id: AtomicU32::new(0),
             release_after_switch: AtomicPtr::new(null_mut()),
         }
-    }
-
-    pub fn bit(&self) -> CoreMask {
-        1 << self.index
     }
 }
 
@@ -97,15 +91,15 @@ pub fn register(core: &'static PerCore) {
 }
 
 pub fn set_online(core: &PerCore) {
-    ONLINE.fetch_or(core.bit(), Ordering::SeqCst);
+    ONLINE.insert(core.index);
 }
 
-pub fn online_cores() -> CoreMask {
-    ONLINE.load(Ordering::SeqCst)
+pub fn online_cores() -> CoreSet {
+    ONLINE.load()
 }
 
 pub fn online_count() -> usize {
-    online_cores().count_ones() as usize
+    online_cores().len()
 }
 
 /// The core with this index. Panics for cores that never registered.
@@ -116,11 +110,9 @@ pub fn core(index: usize) -> &'static PerCore {
     unsafe { &*pointer }
 }
 
-/// Every core in `mask`.
-pub fn cores_in(mask: CoreMask) -> impl Iterator<Item = &'static PerCore> {
-    (0..MAX_CORES)
-        .filter(move |index| mask & (1 << index) != 0)
-        .map(core)
+/// Every core in `set`.
+pub fn cores_in(set: CoreSet) -> impl Iterator<Item = &'static PerCore> {
+    set.iter().map(core)
 }
 
 /// Remembers `flag` to be cleared once this core is off the old stack.
@@ -145,5 +137,5 @@ pub fn take_release_flag() -> *const AtomicBool {
 }
 
 pub fn set_offline(core: &PerCore) {
-    ONLINE.fetch_and(!core.bit(), Ordering::SeqCst);
+    ONLINE.remove(core.index);
 }
