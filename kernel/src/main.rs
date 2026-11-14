@@ -11,6 +11,7 @@ extern crate alloc;
 mod print;
 
 mod arch;
+mod ipc;
 mod memory;
 mod programs;
 mod serial;
@@ -54,7 +55,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let cores = arch::start_other_cores(boot_info);
     println!("{cores} cores online.");
     task::check();
-    task::check_user_programs();
+    ipc::check();
 
     println!("Hematite kernel ready.");
 

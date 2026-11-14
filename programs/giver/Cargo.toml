@@ -1,0 +1,8 @@
+[package]
+name = "giver"
+version = "0.1.0"
+edition = "2024"
+description = "Moves a page away, then reaches for it - must be stopped"
+
+[dependencies]
+userlib = { path = "../../userlib" }

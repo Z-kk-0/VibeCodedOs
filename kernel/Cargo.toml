@@ -7,6 +7,7 @@ edition = "2024"
 abi = { path = "../abi" }
 acpi = { path = "../acpi" }
 boot_info = { path = "../boot_info" }
+capability = { path = "../capability" }
 elf = { path = "../elf" }
 frame_table = { path = "../frame_table" }
 heap = { path = "../heap" }

@@ -46,8 +46,10 @@ UEFI firmware (OVMF in QEMU)
               ├─ task::check: 4 busy tasks + 1 sleeper must interleave,
               │  on more than one core; freeing their stacks must have
               │  sent TLB shootdowns                                     task/checks.rs
-              ├─ user programs: hello must exit 0, intruder must be      programs/, task/program.rs
-              │  stopped; both address spaces freed
+              ├─ ipc::check: services log + shout, programs hello,       kernel/src/ipc/checks.rs,
+              │  owner, giver, vandal, intruder – each with its handles   programs/
+              │  hello, owner exit 0; giver, vandal, intruder stopped;
+              │  their address spaces freed, the services keep running
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ heartbeat: boot task sleeps 10 s at a time; idle tasks run hlt
 ```
@@ -64,6 +66,7 @@ Address space (upper half = kernel, shared by all; lower half = one per user pro
 | `0xFFFF_FF00_0000_0000` | kernel heap, 512 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
 | `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
 | `0x0000_7FFF_FFFF_0000` | top of a program's stack (16 KiB, guard page above) | `kernel/src/task/program.rs` |
+| `0x0000_1000_0000_0000` | a program's memory objects, owned or borrowed (guard page after each) | `kernel/src/ipc/process.rs` |
 | `0x0000_0000_0040_0000` | a program's image (W^X, user) | `kernel/src/task/program.rs` |
 
 All interrupts enter through one path: a 16-byte stub per vector → `interrupt_common` saves all
@@ -90,8 +93,25 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 | `0x80` | system call (`int 0x80`, callable from ring 3) |
 | `0xFF` | APIC spurious interrupt |
 
-System calls (`abi` crate): `int 0x80`, number in `rax`, arguments in `rdi`/`rsi`, result in `rax`.
-Today: `exit`, `write`, `sleep`. Programs use `userlib` (wrappers, `println!`, panic handler).
+System calls (`abi` crate, register table there): `int 0x80`, number in `rax`. `exit`, `sleep`,
+and the capability calls (DECISIONS 020): `call`, `receive`, `reply`, `memory_new`, `drop`.
+Programs use `userlib` (typed wrappers, `println!` via the `log` service, panic handler).
+
+Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020): each process (`ipc/process.rs`) has an
+address space, a handle table and the call it still has to answer. A message is four words plus
+at most one handle, moved between the tasks' saved frames under the scheduler lock. Memory objects
+change hands by the rules in `ipc/transfer.rs`: move (sender loses the mapping), lend `&` (read-only
+for both), lend `&mut` (lender loses the mapping) – borrows end with the reply.
+
+| Program | Kind | Handles it starts with | What it proves |
+|---|---|---|---|
+| `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
+| `shout` | service | 0 log, 1 shout endpoint (receive) | `&mut` borrow and move work |
+| `vandal` | attacker | 0 log, 1 vandal endpoint (receive) | writing into a `&` borrow faults |
+| `hello` | program | 0 log | printing through `log` |
+| `owner` | program | 0 log, 1 shout, 2 vandal | lent memory comes back intact |
+| `giver` | attacker | 0 log, 1 shout | a moved page is gone |
+| `intruder` | attacker | 0 log | forged handles and kernel reads fail |
 
 ## Crates
 
@@ -107,9 +127,10 @@ Today: `exit`, `write`, `sleep`. Programs use `userlib` (wrappers, `println!`, p
 | `heap` | any + host | Heap allocator: size classes + page-backed large blocks. Unit-tested. |
 | `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, freeing exited tasks. Unit-tested. |
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, IPIs). Unit-tested. |
-| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, error codes. |
-| `userlib` | `x86_64-unknown-none` | What programs link against: system calls, `println!`, panic handler. |
-| `programs/*` | `x86_64-unknown-none` | User programs, embedded into the kernel: `hello`, `intruder` (attacks the kernel on purpose). |
+| `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
+| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `println!`, panic handler. |
+| `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
 
 Rule of thumb: logic that is "bytes in, bytes out" goes into a host-testable crate with unit tests;
@@ -132,14 +153,12 @@ Done:
       faulty programs are stopped, not the kernel (DECISIONS 018)
 - [x] Multi-core: every core the ACPI tables list is started and schedules tasks; per-core
       GDT/TSS/timer/idle task, TLB shootdown via IPIs (DECISIONS 019)
+- [x] Capabilities + ownership IPC: handle tables, endpoints, `call`/`receive`/`reply`, memory
+      moved or lent `&`/`&mut` – enforced by the page tables; `log` service (DECISIONS 020)
 
 Next, in order (each one a milestone with its own decision entry):
-1. **Capabilities + ownership IPC** – handles, endpoints, page move/borrow (DECISIONS 012).
-   Draft agreed with the owner: per-process handle tables in the kernel; objects `Memory`
-   (owned, move or lend) and `Endpoint` (cloneable); synchronous `call`/`receive`/`reply`;
-   borrows (`&`, `&mut`) end with the reply and are enforced by the page tables on every core
-   (lender's page unmapped or read-only while lent); `write` replaced by a `log` service.
-2. **Framebuffer** (UEFI GOP) – Hematite gets a screen.
+1. **Framebuffer** (UEFI GOP) – Hematite gets a screen. Design with the owner first: probably the
+   first real driver in user space, which needs a device-memory capability.
 
 ## Known limits (on purpose, for now)
 
@@ -150,10 +169,14 @@ Next, in order (each one a milestone with its own decision entry):
   interrupts off ignores the stop IPI.
 - Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
 - Tasks: 16 KiB kernel stacks without guard pages (an overflow corrupts the heap silently), no
-  priorities, no blocking on events yet – only sleeping. An exception in a *kernel* task still
+  priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task still
   stops the whole machine (in user programs it only ends the program).
-- Programs: one task per program, fixed 16 KiB stack, no heap, embedded in the kernel. `write`
-  prints with the kernel's lock held, so one program can't tear another's line apart.
+- Programs: one task per program, fixed 16 KiB stack, no heap (but memory objects), embedded in
+  the kernel. Handles are wired up at boot in `ipc/checks.rs`; there is no way yet to start a
+  program or look up a service at run time.
+- IPC (DECISIONS 020): one call at a time per server; no timeouts – a caller of a dead server's
+  endpoint waits forever; capabilities can't be revoked; memory objects ≤ 1 MiB, mapping addresses
+  never reused. `log` must not `println!` (it would call itself).
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – see `kernel/src/memory/paging.rs`.
 - The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.

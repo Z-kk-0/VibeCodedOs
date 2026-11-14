@@ -1,0 +1,55 @@
+//! Where memory objects appear in a process (DECISIONS.md, 020): the
+//! kernel picks the addresses, one after the other, with an unmapped
+//! guard page after each object so running off its end faults. Addresses
+//! are never reused – the area is terabytes large.
+
+pub struct MappingArea {
+    next: u64,
+    end: u64,
+    page_size: u64,
+}
+
+impl MappingArea {
+    pub const fn new(start: u64, end: u64, page_size: u64) -> Self {
+        Self {
+            next: start,
+            end,
+            page_size,
+        }
+    }
+
+    /// The start address for an object of `pages` pages, or `None` if the
+    /// area is used up.
+    pub fn reserve(&mut self, pages: u64) -> Option<u64> {
+        let size = pages.checked_add(1)?.checked_mul(self.page_size)?; // + guard page
+        let start = self.next;
+        let next = start.checked_add(size)?;
+        if next > self.end {
+            return None;
+        }
+        self.next = next;
+        Some(start)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objects_get_consecutive_addresses_with_a_gap() {
+        let mut area = MappingArea::new(0x1000_0000, 0x2000_0000, 0x1000);
+        assert_eq!(area.reserve(1), Some(0x1000_0000));
+        assert_eq!(area.reserve(3), Some(0x1000_2000));
+        assert_eq!(area.reserve(1), Some(0x1000_6000));
+    }
+
+    #[test]
+    fn a_full_area_says_no() {
+        let mut area = MappingArea::new(0, 0x4000, 0x1000);
+        assert_eq!(area.reserve(1), Some(0));
+        assert_eq!(area.reserve(2), None, "would need 3 pages, 2 left");
+        assert_eq!(area.reserve(1), Some(0x2000));
+        assert_eq!(area.reserve(u64::MAX), None);
+    }
+}

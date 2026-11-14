@@ -82,6 +82,17 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Removes the mapping of one page and returns the frame it led to –
+    /// which stays allocated: it belongs to whoever mapped it (a memory
+    /// object). Every core using this space forgets the page first.
+    pub fn unmap(&mut self, virtual_address: u64) -> Option<u64> {
+        let _guard = LOCK.lock();
+        let frame = tables(self.root).unmap(virtual_address).ok()?;
+        let cores = self.active_cores.load(Ordering::SeqCst);
+        arch::flush_page_on(cores, virtual_address);
+        Some(frame)
+    }
+
     pub fn translate(&self, virtual_address: u64) -> Option<Translation> {
         let _guard = LOCK.lock();
         tables(self.root).translate(virtual_address)

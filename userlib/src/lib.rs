@@ -1,63 +1,48 @@
 //! The library every Hematite user program uses: system calls wrapped in
 //! safe functions, `println!`, and a panic handler. Calling convention:
 //! the `abi` crate.
+//!
+//! IPC (DECISIONS.md, 020) mirrors Rust's own rules in the types: lending
+//! memory for a call takes `&Memory` or `&mut Memory` for exactly as long
+//! as the call runs, moving it takes the `Memory` by value. So the compiler
+//! already refuses what the kernel's page tables would stop anyway.
 
 #![no_std]
 
+mod ipc;
+mod memory;
 // Public only because `println!` expands to code that uses it.
 #[doc(hidden)]
 pub mod print;
+mod system_call;
 
-use core::arch::asm;
+pub use ipc::{Attach, Error, Handle, Received, call, receive, reply};
+pub use memory::{Borrowed, Memory, ReceivedMemory};
 
 /// The system call numbers and error codes, for programs that need them.
 pub use abi;
 
-/// Raw system call. The kernel preserves every register except `rax`.
-fn system_call(number: u64, first: u64, second: u64) -> u64 {
-    let result;
-    // SAFETY: `int 0x80` enters the kernel, which validates every argument
-    // and only writes `rax`. It may read memory we point it to, hence no
-    // `nomem`.
-    unsafe {
-        asm!(
-            "int 0x80",
-            inlateout("rax") number => result,
-            in("rdi") first,
-            in("rsi") second,
-            options(nostack, preserves_flags),
-        );
-    }
-    result
-}
+use system_call::{Registers, system_call};
 
-/// System calls with unchecked arguments – for programs that test whether
-/// the kernel's own checks hold.
-pub mod raw {
-    /// `write` with any address and length, valid or not.
-    pub fn write(address: u64, length: u64) -> u64 {
-        super::system_call(abi::WRITE, address, length)
-    }
-}
-
-/// Prints text to the kernel log. Fails only for text over 4 KiB.
-pub fn write(text: &str) -> Result<usize, u64> {
-    let result = system_call(abi::WRITE, text.as_ptr() as u64, text.len() as u64);
-    if abi::is_error(result) {
-        Err(result)
-    } else {
-        Ok(result as usize)
-    }
-}
+/// Every program but `log` itself starts with this handle: the log service.
+pub const LOG: Handle = Handle(0);
 
 /// Pauses for at least `ticks` timer ticks (10 ms each).
 pub fn sleep(ticks: u64) {
-    system_call(abi::SLEEP, ticks, 0);
+    system_call(Registers {
+        rax: abi::SLEEP,
+        rdi: ticks,
+        ..Registers::default()
+    });
 }
 
 /// Ends the program with an exit code.
 pub fn exit(code: u64) -> ! {
-    system_call(abi::EXIT, code, 0);
+    system_call(Registers {
+        rax: abi::EXIT,
+        rdi: code,
+        ..Registers::default()
+    });
     unreachable!("the kernel never returns from exit")
 }
 

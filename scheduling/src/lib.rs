@@ -30,7 +30,12 @@ pub type CoreId = usize;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
     Ready,
-    Sleeping { until_tick: u64 },
+    Sleeping {
+        until_tick: u64,
+    },
+    /// Waits for something only another task can do (e.g. send a message);
+    /// that task wakes it with `set_state`.
+    Blocked,
     Exited,
 }
 
@@ -108,6 +113,31 @@ impl<T> RunQueue<T> {
         if !self.tasks[index].idle {
             self.tasks[index].state = state;
         }
+    }
+
+    /// Any task's data, e.g. to deliver a message to it.
+    pub fn task_mut(&mut self, id: TaskId) -> Option<&mut T> {
+        let index = self.tasks.iter().position(|task| task.id == id)?;
+        Some(&mut self.tasks[index].data)
+    }
+
+    /// Changes any task's state – waking a blocked task, for example. Idle
+    /// tasks are always ready.
+    pub fn set_state(&mut self, id: TaskId, state: State) {
+        if let Some(task) = self
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id && !task.idle)
+        {
+            task.state = state;
+        }
+    }
+
+    pub fn state(&self, id: TaskId) -> Option<State> {
+        self.tasks
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.state)
     }
 
     pub fn task_count(&self) -> usize {

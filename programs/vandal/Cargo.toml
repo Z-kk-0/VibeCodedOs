@@ -1,0 +1,8 @@
+[package]
+name = "vandal"
+version = "0.1.0"
+edition = "2024"
+description = "A service that writes into memory it may only read - must be stopped"
+
+[dependencies]
+userlib = { path = "../../userlib" }

@@ -1,8 +1,8 @@
-//! Boot-time proof that multitasking, multi-core and user mode work.
+//! Boot-time proof that multitasking and multi-core work.
 
-use super::{Exit, core_count, sleep, spawn, spawn_program, task_count, wait};
+use super::{Exit, core_count, sleep, spawn, task_count, wait};
 use crate::sync::SpinLock;
-use crate::{arch, memory, programs, time};
+use crate::{arch, time};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -68,34 +68,6 @@ pub fn check() {
     println!(
         "All 5 tasks exited and their stacks were freed ({shootdowns} TLB shootdowns so far)."
     );
-}
-
-/// Runs a well-behaved and a malicious user program. The first must exit
-/// normally; the second must be stopped by the page tables – and the
-/// kernel must not notice anything but that.
-pub fn check_user_programs() {
-    let free_before = memory::free_frame_count();
-    let hello = spawn_program("hello", programs::HELLO).expect("hello failed to load");
-    let intruder = spawn_program("intruder", programs::INTRUDER).expect("intruder failed to load");
-
-    assert_eq!(wait(hello), Exit::Code(0), "hello did not exit cleanly");
-    let intruder_exit = wait(intruder);
-    assert!(
-        matches!(intruder_exit, Exit::Killed(_)),
-        "the intruder was not stopped: {intruder_exit:?}"
-    );
-    sleep(2); // let the scheduler free both programs
-
-    assert_eq!(
-        task_count(),
-        1 + core_count(),
-        "finished programs were not freed"
-    );
-    let still_held = free_before.saturating_sub(memory::free_frame_count());
-    println!(
-        "User mode works: hello exited with 0, the intruder was stopped, the kernel carries on."
-    );
-    println!("Both address spaces freed ({still_held} frames stay with the heap's size classes).");
 }
 
 fn busy_wait_for_next_tick() {

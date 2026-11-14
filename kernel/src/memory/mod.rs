@@ -6,11 +6,9 @@ mod allocator;
 mod checks;
 mod frames;
 pub mod paging;
-mod user;
 
 pub use address_space::AddressSpace;
 pub use frames::{allocate_frame, free_frame, free_frame_count};
-pub use user::copy_from_user;
 
 use boot_info::{BootInfo, MemoryKind, PHYSICAL_MEMORY_WINDOW};
 

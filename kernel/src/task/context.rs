@@ -2,7 +2,8 @@
 //! while it isn't running, and – for user programs – its address space.
 
 use crate::arch::InterruptFrame;
-use crate::memory::{AddressSpace, paging};
+use crate::ipc::Process;
+use crate::memory::paging;
 use alloc::boxed::Box;
 use alloc::vec;
 use core::mem::size_of;
@@ -19,8 +20,9 @@ pub struct TaskContext {
     /// Where interrupts from user mode land (TSS ring-0 stack). 0 for the
     /// boot task, which never runs in user mode.
     pub kernel_stack_top: u64,
-    /// `Some` for user programs; kernel tasks use the kernel's own.
-    pub address_space: Option<AddressSpace>,
+    /// `Some` for user programs: their address space and handles. Kernel
+    /// tasks use the kernel's own address space.
+    pub process: Option<Process>,
     /// Set while a core switches away from this task and is still on its
     /// stack; the interrupt stub clears it (DECISIONS.md, 019). Boxed: the
     /// stub writes to it after the scheduler lock is released, when the
@@ -42,7 +44,7 @@ impl TaskContext {
             name,
             saved_frame: null_mut(),
             kernel_stack_top: 0,
-            address_space: None,
+            process: None,
             leaving: Box::new(AtomicBool::new(false)),
             _kernel_stack: None,
         }
@@ -59,15 +61,14 @@ impl TaskContext {
         })
     }
 
-    /// A user program that will start at `entry` with `user_stack_pointer`,
-    /// in `address_space`.
+    /// A user program that will start at `entry` with `user_stack_pointer`.
     pub fn new_user(
         name: &'static str,
         entry: u64,
         user_stack_pointer: u64,
-        address_space: AddressSpace,
+        process: Process,
     ) -> Self {
-        Self::with_first_frame(name, Some(address_space), |_| {
+        Self::with_first_frame(name, Some(process), |_| {
             InterruptFrame::for_new_user_task(entry, user_stack_pointer)
         })
     }
@@ -80,15 +81,15 @@ impl TaskContext {
 
     /// The page tables to switch to when this task runs.
     pub fn page_table_root(&self) -> u64 {
-        self.address_space
+        self.process
             .as_ref()
-            .map_or_else(paging::kernel_root, AddressSpace::root)
+            .map_or_else(paging::kernel_root, |process| process.space.root())
     }
 
     /// Allocates the kernel stack and puts the task's first frame on top.
     fn with_first_frame(
         name: &'static str,
-        address_space: Option<AddressSpace>,
+        process: Option<Process>,
         first_frame: impl FnOnce(u64) -> InterruptFrame,
     ) -> Self {
         let mut stack = vec![0u8; KERNEL_STACK_SIZE].into_boxed_slice();
@@ -108,7 +109,7 @@ impl TaskContext {
             name,
             saved_frame: frame,
             kernel_stack_top: top,
-            address_space,
+            process,
             leaving: Box::new(AtomicBool::new(false)),
             _kernel_stack: Some(stack),
         }

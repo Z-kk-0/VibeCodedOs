@@ -21,7 +21,6 @@ pub fn print_emergency(arguments: fmt::Arguments) {
     let _ = Serial::com1().write_fmt(arguments);
 }
 
-#[allow(unused_macros, reason = "counterpart of println!, not needed yet")]
 macro_rules! print {
     ($($argument:tt)*) => {
         $crate::print::print(format_args!($($argument)*))

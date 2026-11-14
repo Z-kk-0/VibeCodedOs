@@ -12,18 +12,20 @@ mod exits;
 mod program;
 mod switch;
 
-pub use checks::{check, check_user_programs};
+pub use checks::check;
+pub use context::TaskContext;
 pub use exits::{Exit, wait};
 pub use program::spawn_program;
 pub use switch::switch;
 
 use crate::arch::{self, InterruptFrame, cpu};
-use crate::memory::AddressSpace;
 use crate::sync::SpinLock;
 use crate::time;
 use alloc::boxed::Box;
-use context::TaskContext;
 use scheduling::{CoreId, RunQueue, State, TaskId};
+
+/// All tasks of all cores, with their per-core bookkeeping.
+pub type Tasks = RunQueue<TaskContext>;
 
 static SCHEDULER: SpinLock<Option<RunQueue<TaskContext>>> = SpinLock::new(None);
 
@@ -86,16 +88,19 @@ pub fn current_name() -> &'static str {
     with_scheduler(|scheduler, core| scheduler.current(core).name)
 }
 
-/// Runs `action` with the current program's address space (`None` for
-/// kernel tasks). Interrupts stay off meanwhile.
-pub fn with_current_address_space<R>(action: impl FnOnce(Option<&AddressSpace>) -> R) -> R {
-    with_scheduler(|scheduler, core| action(scheduler.current(core).address_space.as_ref()))
+/// Runs `action` with every task and the core we're on, atomically on all
+/// cores (scheduler lock held, interrupts off) – for IPC, which changes
+/// several tasks at once.
+pub fn with_tasks<R>(action: impl FnOnce(&mut Tasks, CoreId) -> R) -> R {
+    with_scheduler(action)
 }
 
 /// For use inside an interrupt (system call, fault): ends the current task
 /// and returns the frame of the task to continue with.
 pub fn end_current(frame: *mut InterruptFrame, exit: Exit) -> *mut InterruptFrame {
     with_scheduler(|scheduler, core| {
+        // A program that owed a reply hands lent memory back first.
+        crate::ipc::on_exit(scheduler, core);
         exits::record(scheduler.current_id(core), exit);
         scheduler.set_current_state(core, State::Exited);
     });

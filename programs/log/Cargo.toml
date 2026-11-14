@@ -1,0 +1,8 @@
+[package]
+name = "log"
+version = "0.1.0"
+edition = "2024"
+description = "The log service: prints what programs send it, prefixed with their name"
+
+[dependencies]
+userlib = { path = "../../userlib" }

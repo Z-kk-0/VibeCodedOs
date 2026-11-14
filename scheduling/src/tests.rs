@@ -159,3 +159,24 @@ fn idle_tasks_stay_on_their_own_core() {
     queue.switch(1, 0, anyone);
     assert_eq!(*queue.current(1), "idle 1");
 }
+
+#[test]
+fn blocked_tasks_wait_until_someone_wakes_them() {
+    let mut queue = queue();
+    let a = queue.spawn("a");
+    queue.set_state(a, State::Blocked);
+    assert_eq!(run_order(&mut queue, 2), ["boot", "boot"]);
+    assert_eq!(queue.state(a), Some(State::Blocked));
+    queue.set_state(a, State::Ready);
+    assert_eq!(run_order(&mut queue, 2), ["a", "boot"]);
+}
+
+#[test]
+fn any_task_can_be_reached_by_its_id() {
+    let mut queue = queue();
+    let a = queue.spawn("a");
+    *queue.task_mut(a).unwrap() = "renamed";
+    queue.switch(0, 0, anyone);
+    assert_eq!(*queue.current(0), "renamed");
+    assert!(queue.task_mut(99).is_none());
+}

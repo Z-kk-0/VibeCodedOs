@@ -2,6 +2,7 @@
 
 use super::context::TaskContext;
 use super::spawn_context;
+use crate::ipc::{Capability, Process};
 use crate::memory::{AddressSpace, physical_to_pointer};
 use alloc::vec;
 use elf::ElfFile;
@@ -24,7 +25,12 @@ const USER_DATA: Flags = Flags {
 pub type Error = &'static str;
 
 /// Loads `file` (an ELF executable) as a new user program and schedules it.
-pub fn spawn_program(name: &'static str, file: &[u8]) -> Result<TaskId, Error> {
+/// It starts with `handles` as handles 0, 1, 2, … (DECISIONS.md, 020).
+pub fn spawn_program(
+    name: &'static str,
+    file: &[u8],
+    handles: impl IntoIterator<Item = Capability>,
+) -> Result<TaskId, Error> {
     let elf = ElfFile::parse(file)?;
     let span = elf.load_span()?;
     let mut image = vec![0u8; (span.end - span.start) as usize];
@@ -57,7 +63,7 @@ pub fn spawn_program(name: &'static str, file: &[u8]) -> Result<TaskId, Error> {
         name,
         entry,
         stack_pointer,
-        space,
+        Process::new(space, handles),
     )))
 }
 

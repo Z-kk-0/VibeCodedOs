@@ -30,9 +30,9 @@ pub fn switch(frame: *mut InterruptFrame) -> *mut InterruptFrame {
     let previous = scheduler.current(core);
     previous.saved_frame = frame;
     let previous_space = previous
-        .address_space
+        .process
         .as_ref()
-        .map(|space| space as *const _);
+        .map(|process| &process.space as *const AddressSpace);
     let leaving: *const _ = &*previous.leaving;
     if !scheduler.switch(core, time::ticks(), TaskContext::is_off_every_core) {
         return frame;
@@ -69,8 +69,8 @@ unsafe fn activate(next: &TaskContext, previous_space: Option<&AddressSpace>, co
         if root != cpu::page_table_root() {
             // Active before loading (changes now reach us), inactive after
             // leaving (loading CR3 flushed everything old).
-            if let Some(space) = &next.address_space {
-                space.mark_active(core_bit);
+            if let Some(process) = &next.process {
+                process.space.mark_active(core_bit);
             }
             cpu::set_page_table_root(root);
             if let Some(space) = previous_space {

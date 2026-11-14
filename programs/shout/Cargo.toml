@@ -1,0 +1,8 @@
+[package]
+name = "shout"
+version = "0.1.0"
+edition = "2024"
+description = "A service that upper-cases text in memory lent or moved to it"
+
+[dependencies]
+userlib = { path = "../../userlib" }

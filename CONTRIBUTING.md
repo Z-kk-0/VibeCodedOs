@@ -45,12 +45,13 @@ readable but not slow, files under ~200 lines, names that say what things are, c
 the edges, code and docs in English.
 
 **Where does new code go?**
-- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `acpi`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
+- Pure logic (parsing, encoding, bookkeeping, math) → `elf`, `x86`, `acpi`, `capability`, `frame_table`, `paging`, `heap`, `scheduling`, `boot_info` or a
   new small crate (add it to the workspace `members` *and* `default-members`), with unit tests.
 - Code that runs privileged instructions → `kernel/src/arch/` (or `loader/`), covered by boot tests.
 - A new user program → a crate in `programs/` using `userlib`, plus: workspace `members` (not
-  `default-members`), `PROGRAMS` in `xtask/src/build.rs`, an `include_bytes!` in
-  `kernel/src/programs.rs`.
+  `default-members`), `PROGRAMS` in `xtask/src/build.rs`, a `program!` line in
+  `kernel/src/programs.rs`, and its start in `kernel/src/ipc/checks.rs` with the handles it gets
+  (document them at the top of its `main.rs`).
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
   if it can fail silently, print something the boot test can check.
 
@@ -79,5 +80,8 @@ the edges, code and docs in English.
   itself). It's loaded in `arch::init` (boot core) and first thing in `smp::ap_entry`.
 - **Changing a mapping needs a shootdown**: kernel pages via `paging::unmap`, process pages via
   `AddressSpace::map` – both do it. Don't call `invlpg` directly for shared mappings.
+- **Programs get nothing for free** (DECISIONS 020): a program can only use the handles it was
+  started with or received. Data goes in memory objects, never in messages. The `log` service
+  must not use `println!` – that would be a call to itself.
 - **Debugging a hang:** `cargo xtask run`, then look at the last serial line. QEMU's `-d int`
   (add it in `xtask/src/qemu.rs`) logs every interrupt and exception.
