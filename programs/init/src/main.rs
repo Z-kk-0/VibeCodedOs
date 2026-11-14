@@ -15,7 +15,8 @@
 #![no_std]
 #![no_main]
 
-use userlib::{Ended, Error, Handle, Pass, abi, endpoint_new, exit, mint, println, set_log};
+use userlib::set_log;
+use userlib::{Ended, Error, Handle, Memory, Pass, abi, endpoint_new, exit, mint, println};
 use userlib::{spawn, wait};
 
 const CONSOLE: Handle = Handle(0);
@@ -29,6 +30,8 @@ const GIVER: Handle = Handle(7);
 const INTRUDER: Handle = Handle(8);
 /// The CPU exception the attackers must be stopped by.
 const PAGE_FAULT: u64 = 14;
+/// Handed to hello at its start, in a page of its own.
+const GREETING: &str = "a page from init, handed over at your start";
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
@@ -57,22 +60,27 @@ extern "C" fn _start() -> ! {
     let [directory_shout, directory_owner, directory_giver] =
         ["shout", "owner", "giver"].map(directory_for);
 
-    must(spawn(LOG, &[Pass::Move(log), Pass::Move(CONSOLE)]), 7);
+    must(spawn(LOG, [Pass::Move(log), Pass::Move(CONSOLE)]), 7);
     set_log(my_log);
     println!("Started the log; now the others, each with only the handles it needs.");
     must(
-        spawn(DIRECTORY, &[Pass::Move(log_dir), Pass::Move(directory)]),
+        spawn(DIRECTORY, [Pass::Move(log_dir), Pass::Move(directory)]),
         8,
     );
     let vandal = must(
-        spawn(VANDAL, &[Pass::Move(log_vandal), Pass::Move(vandal)]),
+        spawn(VANDAL, [Pass::Move(log_vandal), Pass::Move(vandal)]),
         9,
     );
-    let hello = must(spawn(HELLO, &[Pass::Move(log_hello)]), 10);
+    let mut greeting = must(Memory::new(1), 15);
+    greeting.bytes_mut()[..GREETING.len()].copy_from_slice(GREETING.as_bytes());
+    let hello = must(
+        spawn(HELLO, [Pass::Move(log_hello), Pass::Memory(greeting)]),
+        10,
+    );
     let owner = must(
         spawn(
             OWNER,
-            &[
+            [
                 Pass::Move(log_owner),
                 Pass::Move(directory_owner),
                 Pass::Move(vandal_for_owner),
@@ -81,14 +89,14 @@ extern "C" fn _start() -> ! {
         11,
     );
     let giver = must(
-        spawn(GIVER, &[Pass::Move(log_giver), Pass::Move(directory_giver)]),
+        spawn(GIVER, [Pass::Move(log_giver), Pass::Move(directory_giver)]),
         12,
     );
     must(
-        spawn(SHOUT, &[Pass::Move(log_shout), Pass::Move(directory_shout)]),
+        spawn(SHOUT, [Pass::Move(log_shout), Pass::Move(directory_shout)]),
         13,
     );
-    let intruder = must(spawn(INTRUDER, &[Pass::Move(log_intruder)]), 14);
+    let intruder = must(spawn(INTRUDER, [Pass::Move(log_intruder)]), 14);
 
     let expected = [
         ("hello", hello, Ended::Exited(0)),

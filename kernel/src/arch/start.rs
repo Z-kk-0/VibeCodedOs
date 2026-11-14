@@ -9,12 +9,19 @@ use boot_info::BootInfo;
 
 const STACK_SIZE: usize = 64 * 1024;
 
-#[repr(C, align(16))]
+/// Page-aligned: its lowest page becomes a guard page.
+#[repr(C, align(4096))]
 struct Stack([u8; STACK_SIZE]);
 
 /// Our own stack. Lives in `.bss` (zeroed by the loader) and is only ever
 /// touched by the CPU through `rsp` – Rust code never references it.
 static mut STACK: Stack = Stack([0; STACK_SIZE]);
+
+/// The lowest page of the boot stack. The kernel unmaps it once it runs on
+/// its own page tables, so an overflow faults instead of corrupting `.bss`.
+pub fn boot_stack_guard_page() -> u64 {
+    (&raw const STACK) as u64
+}
 
 core::arch::global_asm!(
     ".global _start",

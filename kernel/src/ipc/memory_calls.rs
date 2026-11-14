@@ -60,10 +60,10 @@ pub fn drop_handle(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) 
             let removed = process.handles.remove(handle).expect("checked above");
             match &removed {
                 Capability::Memory(owned) => {
-                    process.unmap_pages(owned.address, owned.memory.pages() as usize);
+                    process.release_pages(owned.address, owned.memory.pages() as usize);
                 }
                 Capability::Borrowed(borrowed) => {
-                    process.unmap_pages(borrowed.address, borrowed.frames.len());
+                    process.release_pages(borrowed.address, borrowed.frames.len());
                 }
                 _ => {}
             }
@@ -73,6 +73,7 @@ pub fn drop_handle(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) 
     match removed {
         Ok(Capability::Reply(reply)) => fail_reply(tasks, reply, abi::ERROR_PEER_GONE),
         Ok(Capability::Endpoint(end)) if end.can_receive => release_receiving_end(tasks, end),
+        Ok(Capability::Child(child)) => crate::task::forget_exit(child),
         _ => {}
     }
     write_error(frame, status);
@@ -80,4 +81,37 @@ pub fn drop_handle(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) 
 
 fn removed_status<T>(removed: &Result<T, u64>) -> u64 {
     removed.as_ref().err().copied().unwrap_or(0)
+}
+
+/// `memory_info(handle)` – where memory we hold is mapped, and how much.
+pub fn memory_info(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
+    let me = tasks.current_id(core);
+    let info = process(tasks, me)
+        .map_err(|_| abi::ERROR_WRONG_KIND)
+        .and_then(|process| match process.handles.get(Handle(frame.rdi)) {
+            Some(Capability::Memory(owned)) if owned.lent => Err(abi::ERROR_BUSY),
+            Some(Capability::Memory(owned)) => {
+                Ok((owned.address, owned.memory.pages(), abi::ACCESS_OWNED))
+            }
+            Some(Capability::Borrowed(borrowed)) => Ok((
+                borrowed.address,
+                borrowed.frames.len() as u64,
+                borrowed.access,
+            )),
+            Some(_) => Err(abi::ERROR_WRONG_KIND),
+            None => Err(abi::ERROR_BAD_HANDLE),
+        });
+    match info {
+        Ok(memory) => Delivery {
+            badge: 0,
+            words: [0; 4],
+            received: Received {
+                handle: Some(Handle(frame.rdi)),
+                memory: Some(memory),
+            },
+            reply: None,
+        }
+        .write_to(frame),
+        Err(error) => write_error(frame, error),
+    }
 }

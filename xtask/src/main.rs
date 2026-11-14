@@ -22,6 +22,8 @@ Commands:
 Options:
   --release   Optimized build (build, run, boot-test)
   --crash     Kernel page-faults on purpose; boot-test then expects the report
+  --crash-stack  Kernel overflows its stack; boot-test expects the guard page
+              to catch it (reported as a double fault)
   --quick     test: skip the QEMU boot tests
 
 Environment:
@@ -34,8 +36,39 @@ pub type Result<T = ()> = std::result::Result<T, String>;
 #[derive(Clone, Copy, Default)]
 pub struct Options {
     pub release: bool,
-    pub crash: bool,
+    pub crash: Crash,
     pub quick: bool,
+}
+
+/// A kernel that crashes on purpose, to check that crashes are reported.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Crash {
+    #[default]
+    None,
+    PageFault,
+    StackOverflow,
+}
+
+impl Crash {
+    /// The value of `HEMATITE_CRASH_TEST` the kernel is built with.
+    pub fn kernel_switch(self) -> Option<&'static str> {
+        match self {
+            Crash::None => None,
+            Crash::PageFault => Some("page-fault"),
+            Crash::StackOverflow => Some("stack-overflow"),
+        }
+    }
+
+    /// What the serial log must show.
+    pub fn marker(self) -> Option<&'static str> {
+        match self {
+            Crash::None => None,
+            Crash::PageFault => Some("EXCEPTION: Page Fault"),
+            // The guard page faults, and the CPU can't push the page fault's
+            // frame onto the broken stack: a double fault, on its own stack.
+            Crash::StackOverflow => Some("EXCEPTION: Double Fault"),
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -45,7 +78,8 @@ fn main() -> ExitCode {
     for argument in arguments {
         match argument.as_str() {
             "--release" => options.release = true,
-            "--crash" => options.crash = true,
+            "--crash" => options.crash = Crash::PageFault,
+            "--crash-stack" => options.crash = Crash::StackOverflow,
             "--quick" => options.quick = true,
             other => return usage_error(&format!("unknown option '{other}'")),
         }

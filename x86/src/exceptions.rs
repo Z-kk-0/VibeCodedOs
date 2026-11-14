@@ -1,6 +1,7 @@
 //! CPU exception numbers and how to read their error codes.
 //! Intel SDM Vol. 3A, Table 6-1 and Figure 6-11.
 
+pub const NON_MASKABLE_INTERRUPT: u64 = 2;
 pub const BREAKPOINT: u64 = 3;
 pub const DOUBLE_FAULT: u64 = 8;
 pub const PAGE_FAULT: u64 = 14;

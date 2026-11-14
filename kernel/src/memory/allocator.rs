@@ -11,9 +11,10 @@ use frame_table::FrameNumber;
 use heap::{Heap, PAGE_SIZE, PageSource};
 use paging::Flags;
 
-/// The heap's region: one top-level entry (512 GiB) below the kernel image.
+/// The heap's region: the first 448 GiB of one top-level entry (512 GiB)
+/// below the kernel image. The rest holds kernel stacks (`stacks.rs`).
 pub const HEAP_START: u64 = 0xFFFF_FF00_0000_0000;
-pub const HEAP_END: u64 = HEAP_START + (1 << 39);
+pub const HEAP_END: u64 = super::stacks::STACKS_START;
 
 #[global_allocator]
 static ALLOCATOR: KernelAllocator = KernelAllocator;
@@ -85,9 +86,8 @@ unsafe impl PageSource for HeapPages {
 }
 
 fn unmap_range(start: u64, end: u64) {
-    for page in (start..end).step_by(PAGE_SIZE) {
-        if let Some(frame) = page_tables::unmap(page) {
-            free_frame(FrameNumber::containing(frame));
-        }
-    }
+    let pages = ((end - start) / PAGE_SIZE as u64) as usize;
+    page_tables::unmap_range(start, pages, |frame| {
+        free_frame(FrameNumber::containing(frame));
+    });
 }

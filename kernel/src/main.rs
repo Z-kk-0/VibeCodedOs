@@ -93,10 +93,21 @@ fn heartbeat() -> ! {
 /// which is empty since the identity map is gone, to check that faults get
 /// reported.
 fn crash_test() {
+    if option_env!("HEMATITE_CRASH_TEST") == Some("stack-overflow") {
+        println!("Crash test: overflowing the boot stack...");
+        overflow(0);
+    }
     println!("Crash test: reading unmapped memory...");
     let unmapped = 0x1000 as *const u64;
     // SAFETY: not safe at all – that's the point. It must page-fault.
     let _ = unsafe { unmapped.read_volatile() };
+}
+
+/// Calls itself until the stack runs into its guard page.
+#[allow(unconditional_recursion, reason = "that is the crash test")]
+fn overflow(depth: u64) -> u64 {
+    let frame = core::hint::black_box([depth; 64]);
+    overflow(depth + 1) + frame[0]
 }
 
 #[panic_handler]

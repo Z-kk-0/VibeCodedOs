@@ -28,6 +28,25 @@ impl Memory {
         })
     }
 
+    /// Memory we were given at our start, as handle `handle` – asks the
+    /// kernel where it is mapped. Fails for anything but owned memory.
+    pub fn from_start_handle(handle: Handle) -> Result<Self, Error> {
+        let result = system_call(Registers {
+            rax: abi::MEMORY_INFO,
+            rdi: handle.0,
+            ..Registers::default()
+        });
+        check(result.rax)?;
+        if result.rcx >> 32 != abi::ACCESS_OWNED {
+            return Err(Error(abi::ERROR_WRONG_KIND));
+        }
+        Ok(Self {
+            handle,
+            address: result.rdx as *mut u8,
+            pages: result.rcx & 0xFFFF_FFFF,
+        })
+    }
+
     pub fn handle(&self) -> Handle {
         self.handle
     }

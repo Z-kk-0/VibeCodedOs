@@ -10,24 +10,25 @@ mod startup_code;
 
 use super::per_core::{self, MAX_CORES, PerCore, this_core};
 use super::{apic, cpu, gdt, idt, pit};
+use crate::memory::stacks::KernelStack;
 use crate::memory::{self, paging};
 use alloc::boxed::Box;
-use alloc::vec;
 use boot_info::{BootInfo, PAGE_SIZE};
 use core::sync::atomic::{AtomicBool, Ordering};
 use startup_code::{ControlRegisters, StartupPage};
 use x86::apic::Ipi;
 
-/// Interrupt that stops a core for good, after a kernel panic elsewhere.
-pub const STOP_VECTOR: u8 = 0x41;
-
-const KERNEL_STACK_SIZE: usize = 32 * 1024;
-const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
+/// In pages: 32 KiB for the core's idle task, 16 KiB for double faults.
+const KERNEL_STACK_PAGES: usize = 8;
+const DOUBLE_FAULT_STACK_PAGES: usize = 4;
 /// How long a core gets to report back before we give up on it.
 const STARTUP_TIMEOUT_MILLISECONDS: u32 = 1000;
 /// ACPI tables lie in the low 4 GiB, which the physical memory window
 /// always covers (DECISIONS.md, 015).
 const ACPI_READABLE_END: u64 = 4 << 30;
+
+/// Set before the stop NMI goes out (`stop_other_cores`).
+static STOPPING: AtomicBool = AtomicBool::new(false);
 
 /// Set by a started core once it is part of the scheduler.
 static READY: [AtomicBool; MAX_CORES] = [const { AtomicBool::new(false) }; MAX_CORES];
@@ -64,14 +65,17 @@ pub fn start_other_cores(boot_info: &BootInfo) -> usize {
             println!("More than {MAX_CORES} cores - using only the first {MAX_CORES}.");
             break;
         }
-        if !start(&page, core.apic_id, next_index) {
+        if start(&page, core.apic_id, next_index) {
+            next_index += 1;
+        } else {
+            // Back into "wait for startup", so it can't wake up late on the
+            // startup page meant for the next core; that core gets its index.
+            apic::send(Ipi::init(core.apic_id));
             println!(
-                "Core with APIC ID {} did not start - not trying further cores.",
+                "Core with APIC ID {} did not start - skipped it.",
                 core.apic_id
             );
-            break;
         }
-        next_index += 1;
     }
     paging::release_core_startup_tables(table_page);
     next_index
@@ -83,8 +87,14 @@ fn start(page: &StartupPage, apic_id: u32, index: usize) -> bool {
     let core: &'static PerCore = Box::leak(Box::new(PerCore::new(index)));
     core.apic_id.store(apic_id, Ordering::Relaxed);
     per_core::register(core);
-    let stack_top = leaked_stack(KERNEL_STACK_SIZE);
-    let double_fault_stack_top = leaked_stack(DOUBLE_FAULT_STACK_SIZE);
+    let (Some(stack), Some(double_fault_stack)) = (
+        KernelStack::new(KERNEL_STACK_PAGES),
+        KernelStack::new(DOUBLE_FAULT_STACK_PAGES),
+    ) else {
+        return false;
+    };
+    let stack_top = stack.leak();
+    let double_fault_stack_top = double_fault_stack.leak();
     page.prepare(
         stack_top,
         ap_entry as *const () as u64,
@@ -136,9 +146,17 @@ pub fn report_ready() {
 /// Stops every other core: after a kernel panic or exception they would
 /// only keep running on top of broken state.
 pub fn stop_other_cores() {
+    STOPPING.store(true, Ordering::SeqCst);
     if apic::is_ready() && per_core::online_count() > 1 {
-        apic::send(Ipi::fixed_to_all_others(STOP_VECTOR));
+        // A non-maskable interrupt: it stops even a core that spins with
+        // interrupts off.
+        apic::send(Ipi::nmi_to_all_others());
     }
+}
+
+/// For the NMI handler: is this NMI our stop signal?
+pub fn stopping() -> bool {
+    STOPPING.load(Ordering::SeqCst)
 }
 
 /// Leaves scheduling and shootdowns for good.
@@ -160,12 +178,6 @@ fn control_registers() -> ControlRegisters {
         cr4: (cpu::cr4() & !CR4_PCID) as u32,
         efer: (cpu::efer() & EFER_WRITABLE) as u32,
     }
-}
-
-/// A stack nobody ever frees; returns its (16-byte aligned) top.
-fn leaked_stack(size: usize) -> u64 {
-    let stack = Box::leak(vec![0u8; size].into_boxed_slice());
-    (stack.as_mut_ptr() as u64 + size as u64) & !0xF
 }
 
 /// ACPI tables, read through the physical memory window.

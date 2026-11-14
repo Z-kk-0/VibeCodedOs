@@ -95,6 +95,8 @@ pub struct BorrowedMemory {
     /// The lender's frames – not ours to free.
     pub frames: Vec<u64>,
     pub address: u64,
+    /// `abi::ACCESS_SHARED` or `abi::ACCESS_EXCLUSIVE`.
+    pub access: u64,
 }
 
 pub struct ReplyCapability {

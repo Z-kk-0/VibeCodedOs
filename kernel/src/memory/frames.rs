@@ -118,3 +118,11 @@ pub fn free_frame_count() -> usize {
 fn frame_range(start: u64, end: u64) -> Range<u64> {
     start / FRAME_SIZE..end.div_ceil(FRAME_SIZE)
 }
+
+/// Hands one frame the loader used (state "unavailable") to the allocator.
+pub fn reclaim_frame(address: u64) {
+    let mut guard = FRAMES.lock();
+    let table = guard.as_mut().expect("frame table not initialized");
+    let frame = FrameNumber::containing(address).0;
+    table.add_free(frame..frame + 1);
+}

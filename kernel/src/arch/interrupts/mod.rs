@@ -7,7 +7,7 @@ mod stubs;
 pub use frame::InterruptFrame;
 
 use super::per_core::{take_release_flag, this_core};
-use super::{apic, shootdown, smp};
+use super::{apic, shootdown};
 use core::sync::atomic::AtomicBool;
 use x86::exceptions::FIRST_NON_EXCEPTION;
 
@@ -18,7 +18,6 @@ pub const YIELD_VECTOR: u64 = 0x30;
 /// User programs call the kernel with `int 0x80` (see the `abi` crate).
 const SYSCALL_VECTOR: u64 = abi::SYSCALL_VECTOR as u64;
 const SHOOTDOWN_VECTOR: u64 = shootdown::SHOOTDOWN_VECTOR as u64;
-const STOP_VECTOR: u64 = smp::STOP_VECTOR as u64;
 
 unsafe extern "C" {
     /// Start of the stub block in `stubs.rs`. Only its address matters.
@@ -71,7 +70,6 @@ fn dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             shootdown::serve_pending();
             apic::end_of_interrupt();
         }
-        STOP_VECTOR => smp::stop_this_core(),
         // Spurious interrupts must *not* be acknowledged (SDM Vol. 3A, §11.9).
         apic::SPURIOUS_VECTOR => {}
         vector => println!("Unexpected interrupt {vector} - no device is set up for it yet."),

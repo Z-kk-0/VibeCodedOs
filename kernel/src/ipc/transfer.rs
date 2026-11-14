@@ -85,25 +85,52 @@ fn plan(process: &Process, attachment: Attachment, phase: Phase) -> Result<Plan,
     }
 }
 
-/// Takes a capability out of `process` for a program it starts (no
-/// mapping involved, so memory can't go this way). Check all first with
-/// `check_for_child`.
-pub fn take_for_child(process: &mut Process, attachment: Attachment) -> Result<Capability, u64> {
-    match plan(process, attachment, Phase::NoLending)? {
-        Plan::Move => process
-            .handles
-            .remove(attachment.handle)
-            .ok_or(abi::ERROR_BAD_HANDLE),
-        Plan::Copy(capability) => Ok(capability),
-        Plan::Memory { .. } => Err(abi::ERROR_WRONG_KIND),
+/// Gives `child` – a process that doesn't run yet – the handles `list`
+/// names, as its handles 0, 1, 2, … Memory is mapped into the child first,
+/// the only step that can fail, so a failed start leaves the parent as it
+/// was.
+pub fn give_to_child(
+    parent: &mut Process,
+    child: &mut Process,
+    list: &[Attachment],
+) -> Result<(), u64> {
+    let plans = list
+        .iter()
+        .map(|&attachment| plan(parent, attachment, Phase::NoLending))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut addresses = Vec::with_capacity(plans.len());
+    for plan in &plans {
+        let address = match plan {
+            Plan::Memory { frames, .. } => match child.map_frames(frames, true) {
+                Some(address) => Some(address),
+                None => {
+                    // Undo: the frames are the parent's, not the child's.
+                    for (plan, address) in plans.iter().zip(&addresses) {
+                        if let (Plan::Memory { frames, .. }, Some(address)) = (plan, address) {
+                            child.release_pages(*address, frames.len());
+                        }
+                    }
+                    return Err(abi::ERROR_OUT_OF_MEMORY);
+                }
+            },
+            _ => None,
+        };
+        addresses.push(address);
     }
-}
-
-pub fn check_for_child(process: &Process, attachment: Attachment) -> Result<(), u64> {
-    match plan(process, attachment, Phase::NoLending)? {
-        Plan::Memory { .. } => Err(abi::ERROR_WRONG_KIND),
-        _ => Ok(()),
+    for ((&attachment, plan), address) in list.iter().zip(plans).zip(addresses) {
+        let capability = match plan {
+            Plan::Move => parent
+                .handles
+                .remove(attachment.handle)
+                .expect("checked by plan()"),
+            Plan::Copy(capability) => capability,
+            Plan::Memory { frames, .. } => {
+                take_from_sender(parent, attachment, frames, address.expect("mapped above"))
+            }
+        };
+        child.handles.insert(capability);
     }
+    Ok(())
 }
 
 /// Moves, copies or lends the attachment from task `from` to task `to`.

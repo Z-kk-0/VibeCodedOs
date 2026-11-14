@@ -3,7 +3,8 @@
 //! data only travels in memory objects (DECISIONS.md, 020). One call per
 //! line, so one line stays one line.
 //!
-//! The `log` service itself must not use this: it would wait for itself.
+//! The `log` service points it straight at the console (`set_log`) – the
+//! console takes the same message – so `log` can print too.
 
 use crate::ipc::{Handle, call_raw};
 use crate::memory::Memory;
@@ -98,8 +99,9 @@ macro_rules! println {
     }};
 }
 
-/// Makes `println!` use another handle for the log service – for programs
-/// that don't get it as handle 0 (`init`, which starts the log itself).
+/// Makes `println!` use another handle: for programs that don't get the log
+/// as handle 0 (`init`, which starts it), and for `log` itself, which
+/// prints to the console directly.
 pub fn set_log(handle: Handle) {
     LOG.store(handle.0, Ordering::Relaxed);
 }

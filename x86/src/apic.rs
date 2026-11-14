@@ -56,6 +56,7 @@ const DELIVERY_STARTUP: u32 = 0b110 << 8;
 const LEVEL_ASSERT: u32 = 1 << 14;
 /// "Destination shorthand": every core except the sender, ignoring `high`.
 const ALL_EXCEPT_SELF: u32 = 0b11 << 18;
+const DELIVERY_NMI: u32 = 0b100 << 8;
 
 impl Ipi {
     /// Interrupt `vector` on the core with this APIC ID.
@@ -68,6 +69,15 @@ impl Ipi {
         Self {
             high: 0,
             low: ALL_EXCEPT_SELF | DELIVERY_FIXED | LEVEL_ASSERT | u32::from(vector),
+        }
+    }
+
+    /// A non-maskable interrupt on every other core: arrives even where
+    /// interrupts are switched off (the vector field is ignored).
+    pub fn nmi_to_all_others() -> Self {
+        Self {
+            high: 0,
+            low: ALL_EXCEPT_SELF | DELIVERY_NMI | LEVEL_ASSERT,
         }
     }
 
@@ -129,6 +139,7 @@ mod tests {
         assert_eq!(Ipi::fixed(3, 0x40).low, 0x4040);
         assert_eq!(Ipi::fixed(3, 0x40).high, 0x0300_0000);
         assert_eq!(Ipi::fixed_to_all_others(0x41).low, 0xC4041);
+        assert_eq!(Ipi::nmi_to_all_others().low, 0xC4400);
         assert_eq!(id_from_register(0x0200_0000), 2);
     }
 

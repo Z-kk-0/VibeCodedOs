@@ -23,7 +23,7 @@ pub(super) fn take_from_sender(
         let Some(Capability::Memory(owned)) = sender.handles.remove(handle) else {
             unreachable!("checked by plan()");
         };
-        sender.unmap_pages(owned.address, frames.len());
+        sender.release_pages(owned.address, frames.len());
         return Capability::Memory(OwnedMemory {
             memory: owned.memory,
             address,
@@ -57,7 +57,16 @@ pub(super) fn take_from_sender(
             "lent memory still accessible to its lender at {page:#x}"
         );
     }
-    Capability::Borrowed(BorrowedMemory { frames, address })
+    let access = if exclusive {
+        abi::ACCESS_EXCLUSIVE
+    } else {
+        abi::ACCESS_SHARED
+    };
+    Capability::Borrowed(BorrowedMemory {
+        frames,
+        address,
+        access,
+    })
 }
 
 /// Ends a borrow: the borrower loses the memory, the lender (task
@@ -66,7 +75,7 @@ pub fn end_lend(tasks: &mut Tasks, lender: TaskId, lend: Lend) {
     if let Ok(borrower) = process(tasks, lend.borrower_task)
         && let Some(Capability::Borrowed(borrowed)) = borrower.handles.remove(lend.borrower)
     {
-        borrower.unmap_pages(borrowed.address, borrowed.frames.len());
+        borrower.release_pages(borrowed.address, borrowed.frames.len());
     }
     if let Ok(lender) = process(tasks, lender)
         && let Some(Capability::Memory(owned)) = lender.handles.get_mut(lend.lender)

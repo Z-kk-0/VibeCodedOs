@@ -2,7 +2,7 @@
 //! first failure. Green here = safe to commit.
 
 use crate::build::{KERNEL_TARGET, LOADER_TARGET, PROGRAM_TARGET, PROGRAMS};
-use crate::{Options, Result, qemu, run_command};
+use crate::{Crash, Options, Result, qemu, run_command};
 use std::process::Command;
 
 pub fn everything(options: Options) -> Result {
@@ -38,16 +38,14 @@ pub fn everything(options: Options) -> Result {
     step("Unit tests", "test")?;
 
     if !options.quick {
-        println!("\n=== Boot test ===");
-        qemu::boot_test(Options {
-            crash: false,
-            ..options
-        })?;
-        println!("\n=== Crash test ===");
-        qemu::boot_test(Options {
-            crash: true,
-            ..options
-        })?;
+        for (name, crash) in [
+            ("Boot test", Crash::None),
+            ("Crash test: page fault", Crash::PageFault),
+            ("Crash test: stack overflow", Crash::StackOverflow),
+        ] {
+            println!("\n=== {name} ===");
+            qemu::boot_test(Options { crash, ..options })?;
+        }
     }
     println!("\nALL CHECKS PASSED");
     Ok(())

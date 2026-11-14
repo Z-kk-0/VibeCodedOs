@@ -56,7 +56,7 @@ impl Process {
         let start = self.area.reserve(frames.len() as u64)?;
         for (page, &frame) in (start..).step_by(PAGE_SIZE as usize).zip(frames) {
             if self.space.map(page, frame, user_flags(writable)).is_err() {
-                self.unmap_pages(start, frames.len());
+                self.release_pages(start, frames.len());
                 return None;
             }
         }
@@ -78,9 +78,14 @@ impl Process {
     /// Removes the mappings; the frames stay allocated (their memory object
     /// owns them).
     pub fn unmap_pages(&mut self, address: u64, pages: usize) {
-        for page in (address..).step_by(PAGE_SIZE as usize).take(pages) {
-            self.space.unmap(page);
-        }
+        self.space.unmap_range(address, pages, false);
+    }
+
+    /// For memory this process is done with for good: also frees the page
+    /// tables that become empty. The addresses are never handed out again
+    /// (see `MappingArea`), so a stale pointer keeps faulting.
+    pub fn release_pages(&mut self, address: u64, pages: usize) {
+        self.space.unmap_range(address, pages, true);
     }
 }
 
@@ -97,6 +102,8 @@ impl Drop for Process {
             Capability::Borrowed(borrowed) => {
                 self.unmap_pages(borrowed.address, borrowed.frames.len());
             }
+            // Nobody can ask how this child ended anymore.
+            Capability::Child(child) => crate::task::forget_exit(child),
             // Reply handles and receiving ends were dealt with when the
             // program ended (`exit.rs`); the rest needs no cleanup.
             _ => {}

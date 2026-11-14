@@ -14,7 +14,7 @@ mod switch;
 
 pub use checks::check;
 pub use context::TaskContext;
-pub use exits::{Exit, exit_of, wait};
+pub use exits::{Exit, exit_of, forget_exit, wait};
 pub use program::{load_program, spawn_program};
 pub use switch::switch;
 

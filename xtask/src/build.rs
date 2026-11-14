@@ -37,11 +37,10 @@ pub fn build(options: Options) -> Result<PathBuf> {
         root().join("target").join(PROGRAM_TARGET).join(profile),
     );
     // Read by the kernel at compile time (`option_env!`), see kernel/src/main.rs.
-    if options.crash {
-        kernel.env("HEMATITE_CRASH_TEST", "1");
-    } else {
-        kernel.env_remove("HEMATITE_CRASH_TEST");
-    }
+    match options.crash.kernel_switch() {
+        Some(crash) => kernel.env("HEMATITE_CRASH_TEST", crash),
+        None => kernel.env_remove("HEMATITE_CRASH_TEST"),
+    };
     run_command(&mut kernel)?;
 
     let kernel_elf = root()

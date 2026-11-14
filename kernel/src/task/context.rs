@@ -4,13 +4,14 @@
 use crate::arch::InterruptFrame;
 use crate::ipc::Process;
 use crate::memory::paging;
+use crate::memory::stacks::KernelStack;
 use alloc::boxed::Box;
-use alloc::vec;
 use core::mem::size_of;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-pub const KERNEL_STACK_SIZE: usize = 16 * 1024;
+/// 16 KiB, with unmapped guard pages below (`memory::stacks`).
+pub const KERNEL_STACK_PAGES: usize = 4;
 
 pub struct TaskContext {
     pub name: &'static str,
@@ -30,7 +31,7 @@ pub struct TaskContext {
     pub leaving: Box<AtomicBool>,
     /// Freed together with the task. `None` for the boot task, which keeps
     /// running on the kernel's boot stack.
-    _kernel_stack: Option<Box<[u8]>>,
+    _kernel_stack: Option<KernelStack>,
 }
 
 // SAFETY: `saved_frame` points into the task's own stack, which belongs to
@@ -92,8 +93,8 @@ impl TaskContext {
         process: Option<Process>,
         first_frame: impl FnOnce(u64) -> InterruptFrame,
     ) -> Self {
-        let mut stack = vec![0u8; KERNEL_STACK_SIZE].into_boxed_slice();
-        let top = (stack.as_mut_ptr() as u64 + KERNEL_STACK_SIZE as u64) & !0xF;
+        let stack = KernelStack::new(KERNEL_STACK_PAGES).expect("out of memory for a kernel stack");
+        let top = stack.top();
         // At a function's first instruction the ABI expects rsp + 8 to be
         // 16-byte aligned, as if a return address had just been pushed.
         // Kernel task entries never return, so that slot just holds 0.

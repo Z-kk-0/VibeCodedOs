@@ -12,7 +12,7 @@ mod pit;
 pub mod port;
 mod shootdown;
 mod smp;
-mod start;
+pub mod start;
 
 pub use apic::TimerSetup;
 pub use gdt::set_kernel_stack;
@@ -78,12 +78,12 @@ pub fn start_timer_on_this_core() {
     }
 }
 
-/// After unmapping a page of the kernel's half: every core forgets it.
-pub fn flush_kernel_page_everywhere(address: u64) {
-    shootdown::flush_kernel_page(address);
+/// After unmapping pages of the kernel's half: every core forgets them.
+pub fn flush_kernel_pages_everywhere(start: u64, pages: u64) {
+    shootdown::flush_kernel_pages(start, pages);
 }
 
-/// After changing a page of an address space active on `cores`.
-pub fn flush_page_on(cores: CoreMask, address: u64) {
-    shootdown::flush_page(cores, address);
+/// After changing pages of an address space active on `cores`.
+pub fn flush_pages_on(cores: CoreMask, start: u64, pages: u64) {
+    shootdown::flush_pages(cores, start, pages);
 }

@@ -1,9 +1,10 @@
 //! A process's address space: its own lower half, plus the kernel's upper
 //! half shared with everyone (see the invariant in `paging.rs`).
 
-use super::paging::{LOCK, UPPER_HALF_ROOT_ENTRIES, kernel_root, tables};
+use super::paging::{LOCK, PROCESSES_EXIST, UPPER_HALF_ROOT_ENTRIES, kernel_root, tables};
 use super::{allocate_frame, free_frame, physical_to_pointer};
 use crate::arch::{self, CoreMask};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use frame_table::FrameNumber;
 use paging::{Flags, MapError, PAGE_SIZE, PageSize, PageTable, Released, Translation};
@@ -18,6 +19,7 @@ pub struct AddressSpace {
 impl AddressSpace {
     /// An empty lower half; the upper half is the kernel's.
     pub fn new() -> Option<Self> {
+        PROCESSES_EXIST.store(true, Ordering::Relaxed);
         let root = allocate_frame()?.start_address();
         let new_root = physical_to_pointer(root).cast::<PageTable>();
         let kernel = physical_to_pointer(kernel_root()).cast::<PageTable>();
@@ -74,23 +76,40 @@ impl AddressSpace {
         flags: Flags,
     ) -> Result<(), MapError> {
         let _guard = LOCK.lock();
-        tables(self.root).map(virtual_address, physical_address, PageSize::Normal, flags)?;
-        // A core may still hold the old permissions of this page. SeqCst
-        // orders this read after the table write above (see `mark_active`).
-        let cores = self.active_cores.load(Ordering::SeqCst);
-        arch::flush_page_on(cores, virtual_address);
+        let mut tables = tables(self.root);
+        let was_mapped = tables.translate(virtual_address).is_some();
+        tables.map(virtual_address, physical_address, PageSize::Normal, flags)?;
+        if was_mapped {
+            // A core may still hold the old permissions of this page. SeqCst
+            // orders this read after the table write (see `mark_active`).
+            let cores = self.active_cores.load(Ordering::SeqCst);
+            arch::flush_pages_on(cores, virtual_address, 1);
+        }
         Ok(())
     }
 
-    /// Removes the mapping of one page and returns the frame it led to –
-    /// which stays allocated: it belongs to whoever mapped it (a memory
-    /// object). Every core using this space forgets the page first.
-    pub fn unmap(&mut self, virtual_address: u64) -> Option<u64> {
+    /// Removes the mappings of `pages` pages from `start`. The frames stay
+    /// allocated: they belong to whoever mapped them (a memory object).
+    /// With `prune`, page tables that become empty are freed too. Every core
+    /// using this space has forgotten them when this returns – one
+    /// shootdown for the whole range.
+    pub fn unmap_range(&mut self, start: u64, pages: usize, prune: bool) {
         let _guard = LOCK.lock();
-        let frame = tables(self.root).unmap(virtual_address).ok()?;
+        let mut tables = tables(self.root);
+        let mut empty_tables = Vec::new();
+        for page in (start..).step_by(PAGE_SIZE as usize).take(pages) {
+            let _ = if prune {
+                tables.unmap_and_prune(page, |table| empty_tables.push(table))
+            } else {
+                tables.unmap(page)
+            };
+        }
         let cores = self.active_cores.load(Ordering::SeqCst);
-        arch::flush_page_on(cores, virtual_address);
-        Some(frame)
+        arch::flush_pages_on(cores, start, pages as u64);
+        // Only now no core can still be walking them.
+        for table in empty_tables {
+            free_frame(FrameNumber::containing(table));
+        }
     }
 
     pub fn translate(&self, virtual_address: u64) -> Option<Translation> {

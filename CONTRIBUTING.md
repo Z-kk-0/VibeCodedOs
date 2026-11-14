@@ -23,7 +23,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
 | `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot test, crash test. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
-| `cargo xtask boot-test [--crash]` | Headless boot, checks the serial log. `--crash` builds a kernel that page-faults on purpose. |
+| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log. `--crash` builds a kernel that page-faults on purpose, `--crash-stack` one that overflows its stack (the guard page must catch it). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
 
@@ -61,7 +61,8 @@ the edges, code and docs in English.
 - **Kernel output must be ASCII.** The serial log is shown by various terminals; non-ASCII gets mangled.
 - **The loader embeds the kernel at compile time** (`include_bytes!` via `HEMATITE_KERNEL_ELF`).
   Always build through `cargo xtask`, which builds the kernel first.
-- **`--crash` is a compile-time switch** (`option_env!("HEMATITE_CRASH_TEST")` in the kernel).
+- **`--crash` and `--crash-stack` are compile-time switches** (`option_env!("HEMATITE_CRASH_TEST")`
+  in the kernel).
   `xtask` sets/clears it for every build, so a normal build never contains the crash.
 - **Kernel and loader can't be built with a plain `cargo build`** – they need `--target`.
   Plain `cargo build/test/clippy` only covers the host-buildable crates (workspace `default-members`).

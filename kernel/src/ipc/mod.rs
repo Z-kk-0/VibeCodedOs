@@ -29,10 +29,11 @@ mod transfer;
 pub use checks::check;
 pub use endpoint_calls::{endpoint_new, mint, revoke};
 pub use exit::on_exit;
-pub use memory_calls::{drop_handle, memory_new};
+pub use memory_calls::{drop_handle, memory_info, memory_new};
 pub use object::Capability;
 pub use process::Process;
 pub use reply::reply;
+pub use spawn::{finish as finish_spawn, load as load_child};
 pub use timeouts::expire_timeouts;
 
 use crate::arch::InterruptFrame;
@@ -51,6 +52,8 @@ pub enum Next {
     Continue,
     /// The task waits now: switch to another one.
     Block,
+    /// Load this program with no lock held, then `finish_spawn`.
+    Spawn(spawn::Request),
 }
 
 /// `call(object, attachment, words, timeout)`.
@@ -71,7 +74,7 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
         }
         Some(Capability::Program(program)) => {
             let program = *program;
-            return spawn::start(tasks, me, program, &message, frame);
+            return spawn::prepare(tasks, me, program, &message, frame);
         }
         Some(&Capability::Child(child)) => return spawn::wait_for(tasks, core, child, frame),
         Some(Capability::Endpoint(endpoint)) if endpoint.is_revoked() => {

@@ -7,10 +7,19 @@
 use super::InterruptFrame;
 use crate::arch::{self, cpu};
 use crate::task::{self, Exit};
-use x86::exceptions::{BREAKPOINT, PAGE_FAULT, describe_page_fault, name};
+use x86::exceptions::{BREAKPOINT, NON_MASKABLE_INTERRUPT, PAGE_FAULT, describe_page_fault, name};
 
 /// Returns the frame to resume (another task's, if a program was ended).
 pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    if frame.vector == NON_MASKABLE_INTERRUPT {
+        if crate::arch::smp::stopping() {
+            // Another core hit a kernel panic or exception and stops us.
+            crate::arch::stop_this_core();
+        }
+        // Not ours (hardware, a watchdog): nothing the interrupted code did.
+        emergency_println!("Non-maskable interrupt at {:#x} - ignored.", frame.rip);
+        return frame;
+    }
     if frame.vector == BREAKPOINT {
         // `int3` is one byte and `rip` already points past it: just return.
         emergency_println!("Breakpoint at {:#x} - handled, continuing.", frame.rip);

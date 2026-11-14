@@ -6,6 +6,7 @@ mod allocator;
 mod checks;
 mod frames;
 pub mod paging;
+pub mod stacks;
 
 pub use address_space::AddressSpace;
 pub use frames::{allocate_frame, free_frame, free_frame_count};
@@ -31,14 +32,16 @@ pub fn start(boot_info: &BootInfo) {
         frames.table_address
     );
 
-    paging::remove_identity_map();
+    let identity_tables = paging::remove_identity_map();
+    paging::unmap_guard_page(crate::arch::start::boot_stack_guard_page());
     let code = start as fn(&BootInfo) as usize as u64;
     let code_physical = paging::translate(code)
         .expect("kernel code is not mapped")
         .physical_address;
     assert_eq!(paging::translate(0x1000), None, "identity map still there");
     println!(
-        "Identity map removed, lower half empty. Kernel code {code:#x} -> physical {code_physical:#x}."
+        "Identity map removed ({} KiB of its tables freed), lower half empty. Kernel code {code:#x} -> physical {code_physical:#x}.",
+        identity_tables / 1024
     );
 
     let reclaimed = frames::reclaim_boot_memory(boot_info);

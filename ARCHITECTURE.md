@@ -34,7 +34,8 @@ UEFI firmware (OVMF in QEMU)
               ├─ waits 10 ticks
               ├─ memory::start                                           kernel/src/memory/
               │    ├─ frame table: every RAM frame + its state           frame_table/
-              │    ├─ removes the identity map → lower half empty
+              │    ├─ removes the identity map (frees its tables), unmaps
+              │    │  the boot stack's guard page → lower half empty
               │    ├─ reclaims firmware + loader memory
               │    └─ self-checks: frames, heap (Vec, Box, String, BTreeMap)  memory/checks.rs
               ├─ task::init: boot code becomes task 0, idle task created  kernel/src/task/
@@ -65,7 +66,8 @@ Address space (upper half = kernel, shared by all; lower half = one per user pro
 | Start | What | Defined in |
 |---|---|---|
 | `0xFFFF_FFFF_8000_0000` | kernel image (W^X) | `boot_info` |
-| `0xFFFF_FF00_0000_0000` | kernel heap, 512 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
+| `0xFFFF_FF00_0000_0000` | kernel heap, 448 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
+| `0xFFFF_FF70_0000_0000` | kernel stacks, 64 KiB slots with guard pages | `kernel/src/memory/stacks.rs` |
 | `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
 | `0x0000_7FFF_FFFF_0000` | top of a program's stack (16 KiB, guard page above) | `kernel/src/task/program.rs` |
 | `0x0000_1000_0000_0000` | a program's memory objects, owned or borrowed (guard page after each) | `kernel/src/ipc/process.rs` |
@@ -87,11 +89,10 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 
 | Vector | What |
 |---|---|
-| `0x00`–`0x1F` | CPU exceptions |
+| `0x00`–`0x1F` | CPU exceptions (`0x02` NMI doubles as "stop" after a kernel panic elsewhere) |
 | `0x20` | APIC timer (every core; only core 0 advances the clock) |
 | `0x30` | yield (`int 0x30`, kernel tasks) |
 | `0x40` | TLB shootdown IPI |
-| `0x41` | stop IPI (after a kernel panic on another core) |
 | `0x80` | system call (`int 0x80`, callable from ring 3) |
 | `0xFF` | APIC spurious interrupt |
 
@@ -175,21 +176,17 @@ Next, in order (each one a milestone with its own decision entry):
 
 - Multi-core (DECISIONS 019): at most 64 cores, xAPIC mode only (APIC IDs up to 255; firmware
   that already switched to x2APIC isn't supported). One run queue lock for all cores; no CPU
-  affinity. Shootdowns go one page and one request at a time. A core that doesn't answer within
-  1 s stops further cores from being started. After a kernel panic, a core spinning with
-  interrupts off ignores the stop IPI.
-- Heap: size-class pages are never returned, heap addresses never reused, alignment > 4 KiB refused.
-- Tasks: 16 KiB kernel stacks without guard pages (an overflow corrupts the heap silently), no
-  priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task still
-  stops the whole machine (in user programs it only ends the program).
+  affinity. One shootdown request at a time (each covers a whole range).
+- Heap: size-class pages are never returned, alignment > 4 KiB refused. Heap addresses are
+  never reused (on purpose, like memory objects; empty page tables are freed).
+- Tasks: no priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task
+  still stops the whole machine (in user programs it only ends the program).
 - Programs: one task per program, fixed 16 KiB stack, no heap (but memory objects), embedded in
-  the kernel (no file system). Starting one loads it under the scheduler lock (all cores pause
-  scheduling meanwhile); at most 16 handles, no memory objects, at start.
-- IPC (DECISIONS 020, 021): memory objects ≤ 1 MiB, mapping addresses never reused; the directory
-  holds 16 names, first come first served. `log` must not `println!` (it would call itself).
+  the kernel (no file system).
+- IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; the directory holds 16 names, first come
+  first served.
 - Upper-half top-level page table entries must all exist before the first program starts
-  (they're copied, not shared) – see `kernel/src/memory/paging.rs`.
-- The identity map's tables (part of `page tables` memory) aren't freed after removing it – a few KiB.
+  (they're copied, not shared) – `paging::map` panics otherwise; today all do.
 - The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep
   it uncached. Proper per-device mappings come with the first real drivers.
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.

@@ -55,6 +55,10 @@ pub const MINT: u64 = 9;
 /// `revoke(receiving_end, badge)` – every sending end with that badge, and
 /// every copy of one, stops working (`ERROR_REVOKED`). Mint new ones after.
 pub const REVOKE: u64 = 10;
+/// `memory_info(handle)` – where memory we hold is mapped (`rdx`) and its
+/// size and access (`rcx`, as for received memory). For memory a program
+/// got at its start, where no message told it the address.
+pub const MEMORY_INFO: u64 = 11;
 
 /// "No handle" in handle registers.
 pub const NO_HANDLE: u64 = u64::MAX;
@@ -75,15 +79,17 @@ pub const ACCESS_OWNED: u64 = 1;
 pub const ACCESS_SHARED: u64 = 2;
 pub const ACCESS_EXCLUSIVE: u64 = 3;
 
-/// The most pages one `Memory` object can have (1 MiB).
-pub const MAX_MEMORY_PAGES: u64 = 256;
+/// The most pages one `Memory` object can have (256 MiB) – only a sanity
+/// check; free RAM is the real limit.
+pub const MAX_MEMORY_PAGES: u64 = 65_536;
 pub const PAGE_SIZE: u64 = 4096;
 
-/// Starting a program: `call(program, lend_shared(page), [count, ..])`.
-/// The page holds `count` pairs of `u64`: a handle of ours and how to pass
-/// it (`ATTACH_COPY` or `ATTACH_MOVE`). The child starts with them as
-/// handles 0, 1, 2, …; the reply brings a child handle (`rsi`).
-pub const SPAWN_MAX_HANDLES: u64 = 16;
+/// Starting a program: `call(program, lend_shared(list), [count, ..])`.
+/// The lent memory holds `count` pairs of `u64`: a handle of ours and how
+/// to pass it (`ATTACH_COPY` or `ATTACH_MOVE`; memory can be moved too).
+/// The child starts with them as handles 0, 1, 2, …; the reply brings a
+/// child handle (`rsi`).
+pub const SPAWN_ENTRY_SIZE: u64 = 16;
 /// `call(child)` waits until the child has ended. Reply word 0 says how,
 /// word 1 is the exit code or the CPU exception that stopped it.
 pub const CHILD_EXITED: u64 = 0;

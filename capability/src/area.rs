@@ -1,7 +1,12 @@
-//! Where memory objects appear in a process (DECISIONS.md, 020): the
-//! kernel picks the addresses, one after the other, with an unmapped
-//! guard page after each object so running off its end faults. Addresses
-//! are never reused – the area is terabytes large.
+//! Where memory objects appear in a process (DECISIONS.md, 020, 022): the
+//! kernel picks the addresses, one after the other, with an unmapped guard
+//! page after each object so running off its end faults.
+//!
+//! Addresses are deliberately never reused: a pointer into memory that was
+//! moved away or given up keeps faulting forever, instead of one day
+//! pointing into some other object (use-after-free). That costs nothing
+//! lasting – the page tables of given-up ranges are freed (pruned) – and
+//! the area is tens of terabytes: billions of objects.
 
 pub struct MappingArea {
     next: u64,

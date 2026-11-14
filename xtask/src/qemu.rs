@@ -2,7 +2,7 @@
 //! serial log for an expected line (`boot-test`).
 
 use crate::build::build;
-use crate::{Options, Result, root, run_command};
+use crate::{Crash, Options, Result, root, run_command};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,8 +12,6 @@ use std::time::{Duration, Instant};
 
 /// Printed by the kernel once boot finished and timer interrupts arrive.
 const READY_MARKER: &str = "Hematite kernel ready.";
-/// Printed by the exception handler for the deliberate crash (`--crash`).
-const CRASH_MARKER: &str = "EXCEPTION: Page Fault";
 const BOOT_TEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Hematite must use every core (DECISIONS.md, ground rules), so QEMU gets
 /// several. `HEMATITE_CORES` overrides it, e.g. to try 1 or 8.
@@ -28,11 +26,7 @@ pub fn run(options: Options) -> Result {
 
 pub fn boot_test(options: Options) -> Result {
     let esp = build(options)?;
-    let expected = if options.crash {
-        CRASH_MARKER
-    } else {
-        READY_MARKER
-    };
+    let expected = options.crash.marker().unwrap_or(READY_MARKER);
     let log_path = root().join("build").join("serial.log");
     let _ = fs::remove_file(&log_path);
 
@@ -51,7 +45,7 @@ pub fn boot_test(options: Options) -> Result {
     println!("{log}");
     // A normal boot must also have started every core.
     let cores_marker = format!("{} cores online.", cores()?);
-    if found && !options.crash && !log.contains(&cores_marker) {
+    if found && options.crash == Crash::None && !log.contains(&cores_marker) {
         return Err(format!("boot test failed: no '{cores_marker}'"));
     }
     if found {

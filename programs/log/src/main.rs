@@ -3,8 +3,11 @@
 //! (`println!` in `userlib`); it adds the sender's name – taken from the
 //! badge the kernel put on the sender's handle, so it can't be faked.
 //!
-//! Handles: 0 = the log endpoint (receive), 1 = the console.
-//! Must not use `println!` itself: that would be a call to itself.
+//! Handles: 0 = the log endpoint (receive), 1 = the console. Its own
+//! `println!` goes straight to the console (it would wait for itself).
+//!
+//! A request with text that isn't UTF-8 or too long is answered with an
+//! error – and noted on the console.
 
 #![no_std]
 #![no_main]
@@ -16,6 +19,7 @@ const CONSOLE: Handle = Handle(1);
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
+    userlib::set_log(CONSOLE);
     // One page of text plus room for the "[name] " in front.
     let Ok(mut page) = Memory::new(2) else {
         exit(1)
@@ -27,7 +31,15 @@ extern "C" fn _start() -> ! {
         let Some(answer) = request.reply.take() else {
             continue;
         };
-        let status = print(&mut page, &request).map_or_else(|error| error.0, |()| 0);
+        let status = match print(&mut page, &request) {
+            Ok(()) => 0,
+            Err(error) => {
+                let name = abi::name_from_badge(request.badge);
+                let name = core::str::from_utf8(name.as_bytes()).unwrap_or("?");
+                userlib::println!("[log] refused a line from {name}: {error:?}");
+                error.0
+            }
+        };
         let _ = reply(answer, Attach::Nothing, [status, 0, 0, 0]);
     }
 }

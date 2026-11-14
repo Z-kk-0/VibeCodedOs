@@ -83,12 +83,17 @@ pub fn this_core_index() -> usize {
     this_core().index
 }
 
-/// Makes `core` known (but not yet online). Cores register in index order.
+/// Makes `core` known (but not yet online). Cores register in index order;
+/// a core that failed to start is replaced by the next one under its index.
 pub fn register(core: &'static PerCore) {
-    let index = CORE_COUNT.fetch_add(1, Ordering::AcqRel);
-    assert_eq!(index, core.index, "cores must register in order");
+    let index = core.index;
+    let count = CORE_COUNT.load(Ordering::Acquire);
+    assert!(index <= count, "cores must register in order");
     assert!(index < MAX_CORES, "more than {MAX_CORES} cores");
     CORES[index].store(core as *const PerCore as *mut PerCore, Ordering::Release);
+    if index == count {
+        CORE_COUNT.store(count + 1, Ordering::Release);
+    }
 }
 
 pub fn set_online(core: &PerCore) {
