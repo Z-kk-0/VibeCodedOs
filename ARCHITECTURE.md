@@ -170,7 +170,11 @@ Done:
 
 Next, in order (each one a milestone with its own decision entry):
 1. **Framebuffer** (UEFI GOP) – Hematite gets a screen. Design with the owner first: probably the
-   first real driver in user space, which needs a device-memory capability.
+   first real driver in user space, which needs a device-memory capability. (#1)
+
+Open work is tracked as GitHub issues (https://github.com/Z-kk-0/VibeCodedOs/issues): `roadmap`
+for the next milestone, `design` for questions decided together with the owner, `limit` for the
+known limits below, `idea` for things worth considering.
 
 ## Known limits (on purpose, for now)
 
