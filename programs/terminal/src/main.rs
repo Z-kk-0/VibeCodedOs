@@ -3,8 +3,10 @@
 //! (`userlib::keyboard`); the picture goes to the display like paint's –
 //! the terminal touches neither the keyboard nor the screen itself.
 //!
-//! Enter finishes a line: it moves up, and the log gets it as
-//! "typed: <line>" (the boot test types a line and looks for it there).
+//! Editing as in a shell: arrows, Home/End, Delete, Backspace; Up and Down
+//! bring back earlier lines. Enter finishes a line: it moves up, and the
+//! log gets it as "typed: <line>" (the boot test types lines and looks for
+//! them there).
 //!
 //! Handles: 0 = log, 1 = directory, 2 = where keys arrive (receiving end).
 
@@ -13,15 +15,18 @@
 
 extern crate alloc;
 
+mod editor;
 mod panel;
 
-use alloc::string::String;
+use editor::Editor;
 use panel::Panel;
-use userlib::keyboard::{BACKSPACE, KEY};
+use userlib::keyboard::Key;
 use userlib::{Attach, Error, Handle, directory, display, exit, println, receive, reply};
 
 const DIRECTORY: Handle = Handle(1);
 const KEYS: Handle = Handle(2);
+/// Without a screen, lines are only logged: no limit but this.
+const LONGEST_UNSHOWN_LINE: usize = 1000;
 
 #[unsafe(no_mangle)]
 extern "C" fn _start() -> ! {
@@ -33,7 +38,7 @@ extern "C" fn _start() -> ! {
         }
     };
     println!("Ready: type, and press Enter.");
-    let mut line = String::new();
+    let mut editor = Editor::default();
     loop {
         let Ok(mut message) = receive(KEYS) else {
             continue;
@@ -43,35 +48,20 @@ extern "C" fn _start() -> ! {
             // while we draw.
             let _ = reply(answer, Attach::Nothing, [0; 4]);
         }
-        if message.words[0] != KEY {
-            continue;
-        }
-        let Some(key) = char::from_u32(message.words[1] as u32) else {
+        let Some(key) = Key::from_words(message.words) else {
             continue;
         };
-        match key {
-            '\n' => {
-                println!("typed: {line}");
-                if let Some(panel) = &mut panel {
-                    panel.finish_line(&line);
-                }
-                line.clear();
+        let room = panel
+            .as_ref()
+            .map_or(LONGEST_UNSHOWN_LINE, Panel::characters_per_line);
+        if let Some(line) = editor.apply(key, room) {
+            println!("typed: {line}");
+            if let Some(panel) = &mut panel {
+                panel.finish_line(&line);
             }
-            BACKSPACE => {
-                line.pop();
-            }
-            // What doesn't fit on the line anymore is dropped.
-            key if !key.is_control()
-                && panel
-                    .as_ref()
-                    .is_none_or(|panel| panel.fits(line.len() + 1)) =>
-            {
-                line.push(key);
-            }
-            _ => {}
         }
         if let Some(panel) = &mut panel
-            && let Err(error) = panel.show(&line)
+            && let Err(error) = panel.show(&editor.text(), editor.cursor())
         {
             println!("cannot draw: {error:?}");
         }
@@ -87,6 +77,6 @@ fn open_panel() -> Result<Option<Panel>, Error> {
         return Ok(None);
     }
     let mut panel = Panel::new(screen, width, height)?;
-    panel.show("")?;
+    panel.show("", 0)?;
     Ok(Some(panel))
 }

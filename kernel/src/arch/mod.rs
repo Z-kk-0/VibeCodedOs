@@ -18,6 +18,7 @@ pub mod start;
 pub use apic::TimerSetup;
 pub use gdt::set_kernel_stack;
 pub use interrupts::{InterruptFrame, yield_now};
+pub use io_apic::Routed;
 pub use per_core::{CoreSet, release_after_switch, this_core_index as core_index};
 pub use shootdown::{
     any_pending as shootdown_pending, sent_count as shootdown_count,
@@ -96,10 +97,16 @@ pub fn init_device_interrupts(acpi_root: u64) -> usize {
     io_apic::init(acpi_root)
 }
 
-/// Lets ISA IRQ `irq` (0–15) through to the boot core; `false` if this
-/// machine can't (see `io_apic::route_isa`).
-pub fn route_isa_interrupt(irq: u8) -> bool {
+/// Lets ISA IRQ `irq` (0–15) through, to the next core in turn; `None` if
+/// this machine can't (see `io_apic::route_isa`).
+pub fn route_isa_interrupt(irq: u8) -> Option<Routed> {
     io_apic::route_isa(irq)
+}
+
+/// The driver of ISA IRQ `irq` is done with its device: a level-triggered
+/// line, masked since it fired, is opened again.
+pub fn acknowledge_isa_interrupt(irq: u8) {
+    io_apic::acknowledge(irq);
 }
 
 /// How the local APICs are reached: "x2APIC" or "xAPIC".

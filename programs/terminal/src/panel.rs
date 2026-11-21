@@ -48,10 +48,10 @@ impl Panel {
         })
     }
 
-    /// Whether a line of `characters` still fits behind the prompt.
-    pub fn fits(&self, characters: usize) -> bool {
-        let used = (PROMPT_TEXT.len() + characters + 1) as u32; // + cursor
-        used * font::advance(self.scale) + 2 * PADDING <= self.width
+    /// How many characters fit behind the prompt (and the cursor after them).
+    pub fn characters_per_line(&self) -> usize {
+        let room = self.width.saturating_sub(2 * PADDING) / font::advance(self.scale);
+        (room as usize).saturating_sub(PROMPT_TEXT.len() + 1)
     }
 
     pub fn finish_line(&mut self, line: &str) {
@@ -61,9 +61,9 @@ impl Panel {
         self.finished.push_back(String::from(line));
     }
 
-    /// Draws everything with `line` as the one being typed, and lends it
-    /// to the display.
-    pub fn show(&mut self, line: &str) -> Result<(), Error> {
+    /// Draws everything with `line` as the one being typed and the cursor
+    /// under its character number `cursor`, and lends it to the display.
+    pub fn show(&mut self, line: &str, cursor: usize) -> Result<(), Error> {
         let (width, height, scale) = (self.width, self.height, self.scale);
         let mut canvas = Canvas {
             bytes: self.pixels.bytes_mut(),
@@ -77,8 +77,17 @@ impl Panel {
             y += row_height(scale);
         }
         let x = canvas.text(PADDING, y, PROMPT_TEXT, scale, PROMPT);
-        let x = canvas.text(x, y, line, scale, TEXT);
-        canvas.text(x, y, "_", scale, TEXT);
+        canvas.text(x, y, line, scale, TEXT);
+        // The cursor: a bar just below the letter it stands before.
+        let cursor_x = x + cursor as u32 * font::advance(scale);
+        let cursor_y = y + (font::HEIGHT + 1) * scale;
+        canvas.fill(
+            cursor_x,
+            cursor_y,
+            font::advance(scale) - scale,
+            scale,
+            TEXT,
+        );
         let area = Area {
             x: 0,
             y: self.top,

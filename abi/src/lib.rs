@@ -116,11 +116,121 @@ pub const PIXEL_BLUE_GREEN_RED: u64 = 1;
 /// limit). Reply word 0: how often it fired since the last call (at least
 /// 1). Interrupts that come while nobody waits are counted, not lost.
 ///
-/// `call(ports, [op, offset, value, 0])` reads or writes one byte of an I/O
-/// port the handle covers: the port is the handle's first port + `offset`.
-/// The reply's word 0 is the byte read (`PORT_READ`) or 0.
-pub const PORT_READ: u64 = 1;
-pub const PORT_WRITE: u64 = 2;
+/// `call(ports, words)` runs up to four I/O port operations, one per word
+/// (`PortOp`), until the first word that is 0 – all checked before the
+/// first runs. The port is the handle's first port + `offset`.
+/// - `PORT_READ`: the argument is a condition: the read runs only if the
+///   operation before it was a read that ran and found one of these bits
+///   set (0: always). "Read the status, and the data only if there is any"
+///   is one call.
+/// - `PORT_WRITE`: the argument is the byte.
+///
+/// Reply word `i`: `PORT_DONE` | the byte for a read that ran, `PORT_DONE`
+/// for a write, 0 for an operation that was skipped (or not there).
+pub const PORT_READ: u8 = 1;
+pub const PORT_WRITE: u8 = 2;
+pub const PORT_DONE: u64 = 1 << 8;
+
+/// One port operation, as it travels in a message word:
+/// `op | offset << 8 | argument << 16`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PortOp {
+    pub op: u8,
+    pub offset: u8,
+    pub argument: u8,
+}
+
+impl PortOp {
+    pub fn read(offset: u8) -> Self {
+        Self {
+            op: PORT_READ,
+            offset,
+            argument: 0,
+        }
+    }
+
+    /// Reads only if the operation before found one of `bits` set.
+    pub fn read_if(offset: u8, bits: u8) -> Self {
+        Self {
+            op: PORT_READ,
+            offset,
+            argument: bits,
+        }
+    }
+
+    pub fn write(offset: u8, byte: u8) -> Self {
+        Self {
+            op: PORT_WRITE,
+            offset,
+            argument: byte,
+        }
+    }
+
+    pub fn to_word(self) -> u64 {
+        u64::from(self.op) | u64::from(self.offset) << 8 | u64::from(self.argument) << 16
+    }
+}
+
+/// Runs a `call(ports, words)` (see `PORT_READ`): `covered(offset)` says
+/// whether the handle covers a port, `io` does one operation and returns
+/// the byte read (anything for a write). The reply words, or
+/// `ERROR_BAD_ARGUMENT` – then nothing ran. Shared by the kernel (which
+/// does the `in`/`out`) and the host tests below.
+pub fn run_port_ops(
+    words: [u64; 4],
+    covered: impl Fn(u8) -> bool,
+    mut io: impl FnMut(PortOp) -> u8,
+) -> Result<[u64; 4], u64> {
+    let count = words.iter().position(|&word| word == 0).unwrap_or(4);
+    let ops = &words[..count];
+    let valid = count > 0
+        && words[count..].iter().all(|&word| word == 0)
+        && ops.iter().enumerate().all(|(index, &word)| {
+            let op = decode(word);
+            word >> 24 == 0
+                && covered(op.offset)
+                && match op.op {
+                    PORT_READ => index > 0 || op.argument == 0,
+                    PORT_WRITE => true,
+                    _ => false,
+                }
+        });
+    if !valid {
+        return Err(ERROR_BAD_ARGUMENT);
+    }
+    let mut reply = [0; 4];
+    // What the operation before left: the byte, if it was a read that ran.
+    let mut previous: Option<u8> = None;
+    for (slot, &word) in reply.iter_mut().zip(ops) {
+        let op = decode(word);
+        let runs = op.op == PORT_WRITE
+            || op.argument == 0
+            || previous.is_some_and(|byte| byte & op.argument != 0);
+        previous = None;
+        if !runs {
+            continue;
+        }
+        let byte = io(op);
+        *slot = PORT_DONE
+            | if op.op == PORT_READ {
+                u64::from(byte)
+            } else {
+                0
+            };
+        if op.op == PORT_READ {
+            previous = Some(byte);
+        }
+    }
+    Ok(reply)
+}
+
+fn decode(word: u64) -> PortOp {
+    PortOp {
+        op: word as u8,
+        offset: (word >> 8) as u8,
+        argument: (word >> 16) as u8,
+    }
+}
 
 /// Results from `u64::MAX` downwards are errors.
 pub const ERROR_UNKNOWN_CALL: u64 = u64::MAX;
@@ -207,6 +317,73 @@ mod tests {
             b"too long"
         );
         assert_eq!(name_from_badge(0).as_bytes(), b"");
+    }
+
+    #[test]
+    fn port_ops_run_in_order_and_reads_can_depend_on_a_status() {
+        let ports = core::cell::RefCell::new([0x01u8, 0x42]); // status: data ready
+        let mut writes = 0;
+        let run = |words, writes: &mut u32| {
+            run_port_ops(
+                words,
+                |offset| offset < 2,
+                |op| {
+                    if op.op == PORT_WRITE {
+                        *writes += 1;
+                        ports.borrow_mut()[usize::from(op.offset)] = op.argument;
+                    }
+                    ports.borrow()[usize::from(op.offset)]
+                },
+            )
+        };
+        let status_then_data = [
+            PortOp::read(0).to_word(),
+            PortOp::read_if(1, 0x01).to_word(),
+            0,
+            0,
+        ];
+        assert_eq!(
+            run(status_then_data, &mut writes),
+            Ok([PORT_DONE | 0x01, PORT_DONE | 0x42, 0, 0])
+        );
+        ports.borrow_mut()[0] = 0; // no data: the second read is skipped
+        assert_eq!(run(status_then_data, &mut writes), Ok([PORT_DONE, 0, 0, 0]));
+        let write = [
+            PortOp::write(1, 7).to_word(),
+            PortOp::read(1).to_word(),
+            0,
+            0,
+        ];
+        assert_eq!(
+            run(write, &mut writes),
+            Ok([PORT_DONE, PORT_DONE | 7, 0, 0])
+        );
+        assert_eq!(writes, 1);
+    }
+
+    #[test]
+    fn bad_port_ops_run_nothing() {
+        let mut ran = false;
+        let mut run = |words| {
+            run_port_ops(
+                words,
+                |offset| offset == 0,
+                |_| {
+                    ran = true;
+                    0
+                },
+            )
+        };
+        let uncovered = [PortOp::read(0).to_word(), PortOp::read(1).to_word(), 0, 0];
+        assert_eq!(run(uncovered), Err(ERROR_BAD_ARGUMENT));
+        assert_eq!(run([0; 4]), Err(ERROR_BAD_ARGUMENT)); // nothing to do
+        let first_has_a_condition = [PortOp::read_if(0, 1).to_word(), 0, 0, 0];
+        assert_eq!(run(first_has_a_condition), Err(ERROR_BAD_ARGUMENT));
+        let gap = [PortOp::read(0).to_word(), 0, PortOp::read(0).to_word(), 0];
+        assert_eq!(run(gap), Err(ERROR_BAD_ARGUMENT));
+        assert_eq!(run([3, 0, 0, 0]), Err(ERROR_BAD_ARGUMENT)); // no such op
+        assert_eq!(run([1 << 24 | 1, 0, 0, 0]), Err(ERROR_BAD_ARGUMENT));
+        assert!(!ran);
     }
 
     #[test]

@@ -71,10 +71,13 @@ fn dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             apic::end_of_interrupt();
         }
         vector if io_apic::isa_irq(vector).is_some() => {
-            // Edge-triggered only (`io_apic::route_isa`): acknowledging
-            // first loses nothing – a new edge is a new interrupt.
+            let irq = io_apic::isa_irq(vector).expect("checked");
+            // A level-triggered line is masked before the acknowledgement,
+            // or it would fire again at once; an edge-triggered one loses
+            // nothing – a new edge is a new interrupt.
+            io_apic::on_fire(irq);
             apic::end_of_interrupt();
-            crate::ipc::interrupt_fired(io_apic::isa_irq(vector).expect("checked"));
+            crate::ipc::interrupt_fired(irq);
         }
         // Spurious interrupts must *not* be acknowledged (SDM Vol. 3A, §11.9).
         apic::SPURIOUS_VECTOR => {}

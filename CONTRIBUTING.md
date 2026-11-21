@@ -24,7 +24,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
 | `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot tests (4 cores, and 80 cores with x2APIC), crash tests. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
-| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types "Hello, Hematite!" + Enter on the emulated keyboard (QEMU monitor `sendkey`; the terminal must log the line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
+| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types on the emulated keyboard (QEMU monitor `sendkey`, steps in `xtask/src/keyboard.rs`: US and German layout, arrows, AltGr, history; the terminal must log each line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
 | `cargo xtask symbolize <address>...` | Names the kernel function each hex address lies in (debug build). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
@@ -92,8 +92,9 @@ the edges, code and docs in English.
   may lie outside the window, and only its owner may touch it), never free its frames, and map it
   only with its memory object's `caching()`.
 - **Device interrupts are IPC** (DECISIONS 025): a new device line needs `arch::route_isa_interrupt`
-  at boot and an `Interrupt` handle for `init` – nothing else in the kernel. Only edge-triggered
-  ISA lines work (a level-triggered line would fire again before its driver ran). ISA IRQ `n` is
+  at boot and an `Interrupt` handle for `init` – nothing else in the kernel. A level-triggered
+  line stays masked from firing until its driver waits again – so a driver must serve its device
+  before it waits. ISA IRQ `n` is
   vector `0x50 + n`; keep other vectors out of `0x50`–`0x5F`.
 - **Programs get nothing for free** (DECISIONS 020): a program can only use the handles it was
   started with (by `init`) or received. Data goes in memory objects, never in messages. The `log` service

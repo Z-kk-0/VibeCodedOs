@@ -15,7 +15,7 @@ use super::message::{Delivery, Received};
 use super::process::Waiting;
 use super::transfer::process;
 use super::{Next, timeouts};
-use crate::arch::InterruptFrame;
+use crate::arch::{self, InterruptFrame};
 use crate::sync::SpinLock;
 use crate::task::{self, Tasks};
 use scheduling::{CoreId, State, TaskId};
@@ -41,7 +41,10 @@ static STATE: SpinLock<[Line; LINES]> = SpinLock::new(
 );
 
 /// `call(interrupt)`: answers at once if the line fired meanwhile, else waits.
+/// Calling again also says "done with the device": a level-triggered line,
+/// masked since it fired, opens again.
 pub fn wait(tasks: &mut Tasks, core: CoreId, irq: u8, frame: &mut InterruptFrame) -> Next {
+    arch::acknowledge_isa_interrupt(irq);
     let mut lines = STATE.lock();
     let line = &mut lines[usize::from(irq)];
     if line.fired > 0 {

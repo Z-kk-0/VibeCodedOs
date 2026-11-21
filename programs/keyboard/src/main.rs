@@ -6,6 +6,8 @@
 //! them into characters and hand each one to the listener – which is just
 //! another `call`. The kernel knows nothing about keys.
 //!
+//! Layouts: US (the default) and German; Alt+Shift switches (`layouts.rs`).
+//!
 //! Handles: 0 = log, 1 = the controller's ports (0x60 data, 0x64 status /
 //! command), 2 = its interrupt, 3 = where keys go (`userlib::keyboard`).
 
@@ -13,11 +15,11 @@
 #![no_main]
 
 mod controller;
+mod layouts;
 mod scancodes;
 
 use controller::Controller;
-use scancodes::Decoder;
-use userlib::keyboard::KEY;
+use scancodes::{Decoder, Event};
 use userlib::{Attach, Handle, call, exit, interrupt, println};
 
 const PORTS: Handle = Handle(1);
@@ -33,7 +35,9 @@ extern "C" fn _start() -> ! {
             exit(0)
         }
     };
-    println!("Keyboard controller ready. I sleep until its interrupt wakes me.");
+    println!(
+        "Keyboard controller ready. I sleep until its interrupt wakes me. Alt+Shift switches the layout."
+    );
     let mut decoder = Decoder::default();
     loop {
         if let Err(error) = interrupt::wait(INTERRUPT, 0) {
@@ -43,12 +47,15 @@ extern "C" fn _start() -> ! {
         // One interrupt per byte, but reading all that wait is just as
         // right: an interrupt that finds nothing left reads nothing.
         while let Some(byte) = controller.next_byte() {
-            let Some(key) = decoder.feed(byte) else {
-                continue;
-            };
-            if let Err(error) = call(LISTENER, Attach::Nothing, [KEY, u64::from(key), 0, 0]) {
-                println!("nobody listens to keys anymore ({error:?}) - stopping.");
-                exit(0);
+            match decoder.feed(byte) {
+                None => {}
+                Some(Event::Layout(name)) => println!("Layout: {name}."),
+                Some(Event::Key(key)) => {
+                    if let Err(error) = call(LISTENER, Attach::Nothing, key.to_words()) {
+                        println!("nobody listens to keys anymore ({error:?}) - stopping.");
+                        exit(0);
+                    }
+                }
             }
         }
     }

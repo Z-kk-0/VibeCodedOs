@@ -81,13 +81,18 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Device interrupts: all masked, then only the keyboard's let through.
     // It goes to whichever program init gives its handle (DECISIONS.md, 025).
     let io_apics = arch::init_device_interrupts(boot_info.acpi_root);
-    if arch::route_isa_interrupt(ipc::KEYBOARD_IRQ) {
-        println!(
-            "{io_apics} I/O APIC(s), every line masked but IRQ {} (keyboard) - init gets it as a handle.",
-            ipc::KEYBOARD_IRQ
-        );
-    } else {
-        println!("No route for the keyboard's interrupt: nobody will hear keys.");
+    match arch::route_isa_interrupt(ipc::KEYBOARD_IRQ) {
+        Some(routed) => println!(
+            "{io_apics} I/O APIC(s), every line masked but IRQ {} (keyboard, {}-triggered) - to core {}, init gets it as a handle.",
+            ipc::KEYBOARD_IRQ,
+            if routed.level_triggered {
+                "level"
+            } else {
+                "edge"
+            },
+            routed.core
+        ),
+        None => println!("No route for the keyboard's interrupt: nobody will hear keys."),
     }
     ipc::check(screen);
 

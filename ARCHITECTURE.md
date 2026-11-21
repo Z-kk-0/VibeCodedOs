@@ -51,7 +51,7 @@ UEFI firmware (OVMF in QEMU)
               │  must end alone (contained kernel bugs); freeing their
               │  stacks must have sent TLB shootdowns                     task/checks.rs
               ├─ device interrupts: ACPI MADT → I/O APICs, every line     kernel/src/arch/io_apic.rs
-              │  masked; only IRQ 1 (keyboard) routed to the boot core
+              │  masked; only IRQ 1 (keyboard) routed, to core 1
               ├─ ipc::check: starts only `init` (console, 12 Program     kernel/src/ipc/checks.rs
               │  handles, the screen as a Device, the keyboard's ports
               │  and interrupt), waits for its exit                      programs/init
@@ -103,7 +103,7 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 | `0x20` | APIC timer (every core; only core 0 advances the clock) |
 | `0x30` | yield (`int 0x30`, kernel tasks) |
 | `0x40` | TLB shootdown IPI |
-| `0x50`–`0x5F` | ISA device interrupts through the I/O APIC (today only `0x51`, the keyboard) |
+| `0x50`–`0x5F` | ISA device interrupts through the I/O APIC, spread over the cores (today only `0x51`, the keyboard) |
 | `0x80` | system call (`int 0x80`, callable from ring 3) |
 | `0xFF` | APIC spurious interrupt |
 
@@ -134,7 +134,7 @@ Device interrupts (DECISIONS 025): the I/O APIC (`arch/io_apic.rs`, wiring from 
 every line masked except the ones handed out. When a routed line fires, the kernel acknowledges it
 and wakes the program waiting in `call` on its `Interrupt` handle (`ipc/interrupt.rs`) – the
 interrupt *is* the reply. Port I/O goes through a `Ports` handle (`ipc/ports.rs`): the kernel does
-the `in`/`out` for the one port asked for. `keyboard` holds both for the keyboard controller and
+the `in`/`out` for the ports asked for, up to four per call. `keyboard` holds both for the keyboard controller and
 calls `terminal` with each key (`userlib::keyboard`).
 
 | Program | Kind | Handles it starts with | What it proves |
@@ -151,7 +151,7 @@ calls `terminal` with each key (`userlib::keyboard`).
 | `display` | driver, service | 0 log, 1 directory, 2 screen (device) | a driver in user space; device memory, write-combining |
 | `paint` | program | 0 log, 1 directory | drawing through `display` with lent memory (the boot test's screenshot checks it) |
 | `keyboard` | driver | 0 log, 1 ports 0x60/0x64, 2 IRQ 1, 3 keys (sending end to `terminal`) | interrupts as replies; port I/O through a handle |
-| `terminal` | program, service | 0 log, 1 directory, 2 keys (receive) | typing shows up on the screen (the boot test types a line) |
+| `terminal` | program, service | 0 log, 1 directory, 2 keys (receive) | typing shows up on the screen; line editing, history (the boot test types) |
 
 ## Crates
 
@@ -226,8 +226,8 @@ known limits below, `idea` for things worth considering.
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.
 - Screen (DECISIONS 023): one, in the firmware's mode, 32-bit RGB/BGR only. `display` handles one
   request at a time and copies whole areas (no double buffering).
-- Device interrupts (DECISIONS 025): ISA IRQs only, edge-triggered, all to the boot core; port I/O
-  costs a system call per byte. The keyboard knows the US layout and no arrow keys.
+- Device interrupts (DECISIONS 025): only the 16 ISA IRQs (more needs PCI); the level-triggered
+  path is untested in QEMU. Keyboard: US and German layouts, no dead keys.
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

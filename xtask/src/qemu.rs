@@ -53,7 +53,7 @@ pub fn boot_test(options: Options) -> Result {
     let found = wait_for_line(&log_path, expected, &mut child, BOOT_TEST_TIMEOUT);
     let normal_boot = found && options.crash == Crash::None;
     // Type first, so the screenshot shows the terminal with the line.
-    let typed = normal_boot.then(|| type_a_line(&mut child, &log_path));
+    let typed = normal_boot.then(|| type_on_the_keyboard(&mut child, &log_path));
     let screenshot = normal_boot.then(|| take_screenshot(&mut child, &screen_path));
     let _ = child.kill();
     let _ = child.wait();
@@ -82,29 +82,30 @@ pub fn boot_test(options: Options) -> Result {
     }
 }
 
-/// Waits for the keyboard driver, types `keyboard::TYPED` and Enter, and
-/// waits until the terminal logs the line (see `keyboard.rs`).
-fn type_a_line(qemu: &mut Child, log_path: &Path) -> Result {
+/// Waits for the keyboard driver, then types each of `keyboard::steps()`
+/// and waits until its line is in the log (see `keyboard.rs`).
+fn type_on_the_keyboard(qemu: &mut Child, log_path: &Path) -> Result {
     if !wait_for_line(log_path, keyboard::KEYBOARD_READY, qemu, STEP_TIMEOUT) {
         return Err(format!(
             "keyboard test failed: no '{}'",
             keyboard::KEYBOARD_READY
         ));
     }
-    for key in keyboard::key_names(keyboard::TYPED) {
-        monitor(qemu, &format!("sendkey {key}"))?;
-        sleep(KEY_INTERVAL);
+    for step in keyboard::steps() {
+        for key in &step.keys {
+            monitor(qemu, &format!("sendkey {key}"))?;
+            sleep(KEY_INTERVAL);
+        }
+        if !wait_for_lines(log_path, &step.expected, step.times, qemu, STEP_TIMEOUT) {
+            return Err(format!(
+                "keyboard test failed: pressed {}, but no '{}' ({} times)",
+                step.keys.join(" "),
+                step.expected,
+                step.times
+            ));
+        }
     }
-    let expected = keyboard::expected_line();
-    if !wait_for_line(log_path, &expected, qemu, STEP_TIMEOUT) {
-        return Err(format!(
-            "keyboard test failed: typed a line, but no '{expected}'"
-        ));
-    }
-    println!(
-        "Typed '{}' on the keyboard: the terminal got it.",
-        keyboard::TYPED
-    );
+    println!("Typed on the keyboard - arrows, layouts, AltGr, history: the terminal got it all.");
     Ok(())
 }
 
@@ -134,14 +135,26 @@ fn take_screenshot(qemu: &mut Child, path: &Path) -> Result {
 }
 
 fn wait_for_line(log_path: &Path, expected: &str, qemu: &mut Child, timeout: Duration) -> bool {
+    wait_for_lines(log_path, expected, 1, qemu, timeout)
+}
+
+/// Waits until `expected` is in the log at least `times` times.
+fn wait_for_lines(
+    log_path: &Path,
+    expected: &str,
+    times: usize,
+    qemu: &mut Child,
+    timeout: Duration,
+) -> bool {
     let deadline = Instant::now() + timeout;
+    let found = || read_log(log_path).matches(expected).count() >= times;
     while Instant::now() < deadline {
-        if read_log(log_path).contains(expected) {
+        if found() {
             sleep(Duration::from_millis(500)); // let the rest of a multi-line report arrive
             return true;
         }
         if let Ok(Some(_)) = qemu.try_wait() {
-            return read_log(log_path).contains(expected); // QEMU quit on its own
+            return found(); // QEMU quit on its own
         }
         sleep(Duration::from_millis(250));
     }

@@ -3,12 +3,13 @@
 //! command (write). Firmware leaves it usable, with translation to scancode
 //! set 1 on; we only make sure the keyboard port is on and interrupts us.
 
-use userlib::{Handle, ports};
+use userlib::Handle;
+use userlib::ports::{self, PortOp};
 
 /// Offsets from the handle's first port, 0x60.
-const DATA: u16 = 0;
-const STATUS: u16 = 4;
-const COMMAND: u16 = 4;
+const DATA: u8 = 0;
+const STATUS: u8 = 4;
+const COMMAND: u8 = 4;
 
 /// Status bits.
 const OUTPUT_FULL: u8 = 1 << 0; // a byte waits at DATA for us
@@ -48,14 +49,16 @@ impl Controller {
         Ok(controller)
     }
 
-    /// The next byte from the keyboard, if one is waiting.
+    /// The next byte from the keyboard, if one is waiting. One call per
+    /// byte: the kernel reads the status, and the data only if there is any.
     pub fn next_byte(&self) -> Option<u8> {
         loop {
-            let status = self.status().ok()?;
-            if status & OUTPUT_FULL == 0 {
-                return None;
-            }
-            let byte = ports::read(self.ports, DATA).ok()?;
+            let [status, byte] = ports::run(
+                self.ports,
+                [PortOp::read(STATUS), PortOp::read_if(DATA, OUTPUT_FULL)],
+            )
+            .ok()?;
+            let (status, byte) = (status?, byte?);
             if status & FROM_MOUSE == 0 {
                 return Some(byte);
             }
