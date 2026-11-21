@@ -5,11 +5,10 @@
 use crate::handoff::Handoff;
 use crate::kernel_image::LoadedKernel;
 use crate::uefi::{BootServices, MemoryType};
-use boot_info::{KERNEL_BASE, PHYSICAL_MEMORY_WINDOW};
+use crate::window::{self, Window};
+use boot_info::{Framebuffer, KERNEL_BASE};
 use core::arch::asm;
-use paging::{
-    Caching, Flags, HUGE_PAGE_SIZE, MapError, Mapper, PAGE_SIZE, PageSize, PageTable, TableMemory,
-};
+use paging::{Caching, Flags, MapError, Mapper, PAGE_SIZE, PageSize, PageTable, TableMemory};
 
 pub type Error = &'static str;
 
@@ -17,19 +16,13 @@ const GIB: u64 = 1 << 30;
 /// Devices such as the local APIC sit just below 4 GiB, so the window
 /// always covers at least that much.
 const MINIMUM_WINDOW: u64 = 4 * GIB;
-const LOADER_IDENTITY: Flags = Flags {
-    writable: true,
-    executable: true,
-    user: false,
-    caching: Caching::WriteBack,
-};
 
 pub struct AddressSpace {
     /// Physical address of the top-level table (goes into CR3).
     pub root: u64,
     pub window_size: u64,
-    /// How much of the window is mapped uncached: every 2 MiB without RAM.
-    pub uncached_size: u64,
+    /// What is uncached in the window, and what was left out of it.
+    pub window: Window,
     pub tables_used: u64,
     use_no_execute: bool,
 }
@@ -61,6 +54,7 @@ pub fn build(
     boot_services: &BootServices,
     kernel: &LoadedKernel,
     handoff: &Handoff,
+    screen: &Framebuffer,
 ) -> Result<AddressSpace, Error> {
     let window_size = handoff
         .physical_memory_end
@@ -78,34 +72,9 @@ pub fn build(
 
     let use_no_execute = cpu_supports_no_execute();
     let mut mapper = Mapper::new(&mut pool, use_no_execute).map_err(describe)?;
-    let mut uncached_size = 0;
-    for physical in (0..window_size).step_by(HUGE_PAGE_SIZE as usize) {
-        // Device memory (no RAM in this 2 MiB) is never cached: a cached
-        // device register would answer from the cache, not the device. Until
-        // now only the firmware's MTRRs made sure of that (DECISIONS.md, 023).
-        let window_flags = if handoff.holds_ram(physical, physical + HUGE_PAGE_SIZE) {
-            Flags::KERNEL_DATA
-        } else {
-            uncached_size += HUGE_PAGE_SIZE;
-            Flags {
-                caching: Caching::Uncached,
-                ..Flags::KERNEL_DATA
-            }
-        };
-        // Identity map: the loader keeps running at its physical address
-        // right after the switch. The kernel removes it immediately.
-        mapper
-            .map(physical, physical, PageSize::Huge, LOADER_IDENTITY)
-            .map_err(describe)?;
-        mapper
-            .map(
-                PHYSICAL_MEMORY_WINDOW + physical,
-                physical,
-                PageSize::Huge,
-                window_flags,
-            )
-            .map_err(describe)?;
-    }
+    // The window, and the identity map the loader runs on right after the
+    // switch (the kernel removes it at once).
+    let window = window::map(&mut mapper, window_size, handoff, screen).map_err(describe)?;
 
     // The kernel, page by page, with each ELF segment's permissions:
     // code is never writable, data never executable ("W^X").
@@ -135,7 +104,7 @@ pub fn build(
     Ok(AddressSpace {
         root,
         window_size,
-        uncached_size,
+        window,
         tables_used: (pool.next - pool_start) / PAGE_SIZE,
         use_no_execute,
     })
@@ -168,12 +137,13 @@ impl AddressSpace {
 }
 
 /// Upper bound of tables `build` needs: per GiB one PD for the identity map
-/// and one for the window, their PDPTs, the root, and the kernel's tables.
+/// and one for the window, their PDPTs, the root, the kernel's tables, and
+/// what leaving the framebuffer out may cost.
 fn tables_needed(window_size: u64, kernel_size: u64) -> u64 {
     let gigabytes = window_size / GIB;
     let pdpts = 2 * gigabytes.div_ceil(512);
     let kernel_tables = 2 + (kernel_size / PAGE_SIZE).div_ceil(512) + 1;
-    2 * gigabytes + pdpts + 1 + kernel_tables
+    2 * gigabytes + pdpts + 1 + kernel_tables + window::EXTRA_TABLES
 }
 
 /// CPUID leaf 0x8000_0001, EDX bit 20 (Intel SDM Vol. 2A, CPUID).

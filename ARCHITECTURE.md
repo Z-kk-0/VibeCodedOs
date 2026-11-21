@@ -21,8 +21,9 @@ UEFI firmware (OVMF in QEMU)
        │  where the other cores will start                               loader/src/main.rs
        ├─ finds the screen: GOP's current mode → framebuffer             loader/src/screen.rs
        ├─ allocates the handoff buffers, peeks at the memory map         loader/src/handoff.rs
-       ├─ builds page tables: kernel (W^X), physical memory window
-       │  (2 MiB without RAM: uncached), temporary identity map          loader/src/address_space.rs, paging/
+       ├─ builds page tables: kernel (W^X), physical memory window       loader/src/address_space.rs,
+       │  (2 MiB without RAM: uncached; framebuffer left out),           loader/src/window.rs, paging/
+       │  temporary identity map
        ├─ final memory map → ExitBootServices → BootInfo
        └─ enables NX + write protection, loads CR3, jumps to _start
             kernel _start: cli, own stack                                kernel/src/arch/start.rs
@@ -70,7 +71,7 @@ Address space (upper half = kernel, shared by all; lower half = one per user pro
 | `0xFFFF_FFFF_8000_0000` | kernel image (W^X) | `boot_info` |
 | `0xFFFF_FF00_0000_0000` | kernel heap, 448 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
 | `0xFFFF_FF70_0000_0000` | kernel stacks, 64 KiB slots with guard pages | `kernel/src/memory/stacks.rs` |
-| `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`); RAM write-back, the rest uncached | `boot_info` |
+| `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`); RAM write-back, the rest uncached, the framebuffer left out | `boot_info` |
 | `0x0000_7FFF_FFFF_0000` | top of a program's stack (grows on demand up to 8 MiB; guard pages above and below) | `kernel/src/task/program.rs` |
 | `0x0000_1000_0000_0000` | a program's memory objects, owned or borrowed (guard page after each) | `kernel/src/ipc/process.rs` |
 | `0x0000_0000_0040_0000` | a program's image (W^X, user) | `kernel/src/task/program.rs` |
@@ -201,8 +202,7 @@ known limits below, `idea` for things worth considering.
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.
 - Screen (DECISIONS 023): one, in the firmware's mode, 32-bit RGB/BGR only. `display` handles one
-  request at a time and copies whole areas (no double buffering). The framebuffer may also lie in
-  the physical memory window (uncached there; the kernel never touches it).
+  request at a time and copies whole areas (no double buffering).
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

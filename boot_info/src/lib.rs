@@ -9,7 +9,9 @@
 //! ```text
 //! 0xFFFF_FFFF_8000_0000  KERNEL_BASE   kernel image, W^X per ELF segment
 //! 0xFFFF_8000_0000_0000  PHYSICAL_MEMORY_WINDOW + p = physical address p
-//!                        (all RAM, and at least the first 4 GiB incl. devices)
+//!                        (all RAM, and at least the first 4 GiB incl. devices,
+//!                        uncached where there is no RAM; the framebuffer
+//!                        is left out – it belongs to whoever opens the screen)
 //! 0x0000_0000_0000_0000  identity map, same size as the window – only so the
 //!                        loader survives switching page tables. The kernel
 //!                        removes it right away; the lower half then belongs

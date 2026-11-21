@@ -15,6 +15,7 @@ mod handoff;
 mod kernel_image;
 mod screen;
 mod uefi;
+mod window;
 
 use console::Console;
 use core::fmt::Write;
@@ -72,14 +73,16 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
 
     let handoff =
         handoff::prepare(boot_services).unwrap_or_else(|message| fail(&mut console, message));
-    let address_space = address_space::build(boot_services, &kernel, &handoff)
-        .unwrap_or_else(|message| fail(&mut console, message));
+    let address_space =
+        address_space::build(boot_services, &kernel, &handoff, &platform.framebuffer)
+            .unwrap_or_else(|message| fail(&mut console, message));
     let _ = writeln!(
         console,
-        "Page tables: {} tables, physical memory window {} GiB ({} MiB device memory, uncached). Leaving the firmware...",
+        "Page tables: {} tables, physical memory window {} GiB ({} MiB device memory uncached, {} KiB framebuffer left out). Leaving the firmware...",
         address_space.tables_used,
         address_space.window_size >> 30,
-        address_space.uncached_size >> 20
+        address_space.window.uncached_size >> 20,
+        address_space.window.left_out_size >> 10
     );
 
     match handoff.finish(boot_services, image, console, platform) {

@@ -59,8 +59,16 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("{cores} cores online.");
     task::check();
     if screen.exists() {
+        // Its only view will be the one `display` opens (DECISIONS.md, 023).
+        let first_page = boot_info::PHYSICAL_MEMORY_WINDOW + screen.address;
+        let last_page = first_page + (screen.pages() - 1) * paging::PAGE_SIZE;
+        assert!(
+            memory::paging::translate(first_page).is_none()
+                && memory::paging::translate(last_page).is_none(),
+            "the framebuffer is still in the physical memory window"
+        );
         println!(
-            "Screen: {}x{} pixels, {} KiB framebuffer at {:#x} - init gets it as a device.",
+            "Screen: {}x{} pixels, {} KiB framebuffer at {:#x}, not in the kernel's window - init gets it as a device.",
             screen.width,
             screen.height,
             screen.size / 1024,
