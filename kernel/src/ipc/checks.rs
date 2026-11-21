@@ -1,17 +1,21 @@
 //! Boot-time proof that user space can run itself (DECISIONS.md, 020, 021).
 //!
-//! The kernel starts exactly one program, `init`, and gives it the console
-//! and one `Program` handle per built-in program. Everything else – which
-//! services run, who may talk to whom, the checks that the ownership rules
-//! hold – is `init`'s business (see `programs/init`). The kernel only looks
-//! at the result: init exits with 0 only if every check passed.
+//! The kernel starts exactly one program, `init`, and gives it the console,
+//! one `Program` handle per built-in program and one `Device` handle per
+//! device it found – today only the screen (DECISIONS.md, 023). Everything
+//! else – which services run, who may talk to whom, who drives the screen,
+//! the checks that the ownership rules hold – is `init`'s business (see
+//! `programs/init`). The kernel only looks at the result: init exits with 0
+//! only if every check passed.
 
-use super::object::{Capability, ProgramCapability};
+use super::object::{Capability, Device, Memory, ProgramCapability};
 use crate::programs;
 use crate::task::{Exit, core_count, sleep, spawn_program, task_count, wait};
+use boot_info::{Framebuffer, PixelFormat};
+use paging::Caching;
 
 /// In the order `init` expects them, after the console (handle 0).
-const PROGRAMS: [(&str, &[u8]); 8] = [
+const PROGRAMS: [(&str, &[u8]); 10] = [
     ("log", programs::LOG),
     ("dir", programs::DIRECTORY),
     ("shout", programs::SHOUT),
@@ -20,16 +24,20 @@ const PROGRAMS: [(&str, &[u8]); 8] = [
     ("owner", programs::OWNER),
     ("giver", programs::GIVER),
     ("intruder", programs::INTRUDER),
+    ("display", programs::DISPLAY),
+    ("paint", programs::PAINT),
 ];
 /// Services that keep running once init is done.
-const SERVICES: usize = 3; // log, dir, shout
+const SERVICES: usize = 4; // log, dir, shout, display
 
-pub fn check() {
-    let handles = core::iter::once(Capability::Console).chain(
-        PROGRAMS
-            .iter()
-            .map(|&(name, image)| Capability::Program(ProgramCapability { name, image })),
-    );
+pub fn check(screen: Framebuffer) {
+    let handles = core::iter::once(Capability::Console)
+        .chain(
+            PROGRAMS
+                .iter()
+                .map(|&(name, image)| Capability::Program(ProgramCapability { name, image })),
+        )
+        .chain(core::iter::once(screen_device(screen)));
     let init = spawn_program("init", programs::INIT, handles)
         .unwrap_or_else(|error| panic!("init: {error}"));
     let exit = wait(init);
@@ -43,4 +51,21 @@ pub fn check() {
         "finished programs were not freed"
     );
     println!("User space runs itself: init started every program and all its checks passed.");
+}
+
+/// The screen as a device: its memory, write-combining (DECISIONS.md, 023),
+/// and what a driver needs to know to draw on it.
+fn screen_device(screen: Framebuffer) -> Capability {
+    let memory = screen
+        .exists()
+        .then(|| Memory::device(screen.address, screen.pages(), Caching::WriteCombining));
+    let format = match screen.format {
+        PixelFormat::RedGreenBlue => abi::PIXEL_RED_GREEN_BLUE,
+        PixelFormat::BlueGreenRed => abi::PIXEL_BLUE_GREEN_RED,
+    };
+    let info = [screen.width, screen.height, screen.stride].map(u64::from);
+    Capability::Device(Device {
+        memory,
+        info: [info[0], info[1], info[2], format],
+    })
 }

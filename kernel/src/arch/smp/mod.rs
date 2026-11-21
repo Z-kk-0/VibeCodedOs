@@ -129,6 +129,7 @@ extern "sysv64" fn ap_entry(core: &'static PerCore, double_fault_stack_top: u64)
     // same way; the GDT and stacks were made for this core and live forever.
     unsafe {
         cpu::set_page_table_root(paging::kernel_root());
+        cpu::set_page_attribute_table();
         gdt::init(core, double_fault_stack_top);
         idt::load();
         apic::enable_on_started_core();

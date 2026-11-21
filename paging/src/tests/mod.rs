@@ -9,6 +9,7 @@ const KERNEL_CODE: Flags = Flags {
     writable: false,
     executable: true,
     user: false,
+    caching: Caching::WriteBack,
 };
 const HIGH: u64 = 0xFFFF_FFFF_8000_0000;
 

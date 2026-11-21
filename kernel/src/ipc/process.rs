@@ -6,7 +6,7 @@ use super::object::Capability;
 use crate::memory::AddressSpace;
 use alloc::sync::Arc;
 use capability::{HandleTable, MappingArea};
-use paging::{Flags, PAGE_SIZE};
+use paging::{Caching, Flags, PAGE_SIZE};
 use scheduling::TaskId;
 
 /// Where memory objects appear: far from the program image (low) and the
@@ -51,9 +51,10 @@ impl Process {
     }
 
     /// Maps `frames` at a fresh address of the mapping area and returns it.
-    /// On failure nothing stays mapped.
-    pub fn map_frames(&mut self, frames: &[u64], writable: bool) -> Option<u64> {
-        self.map_frames_aligned(frames, writable, PAGE_SIZE)
+    /// On failure nothing stays mapped. `caching` comes from the memory
+    /// object: write-back for RAM, what the device needs for device memory.
+    pub fn map_frames(&mut self, frames: &[u64], writable: bool, caching: Caching) -> Option<u64> {
+        self.map_frames_aligned(frames, writable, caching, PAGE_SIZE)
     }
 
     /// The same, at an address that is a multiple of `align` (a power of two).
@@ -61,11 +62,16 @@ impl Process {
         &mut self,
         frames: &[u64],
         writable: bool,
+        caching: Caching,
         align: u64,
     ) -> Option<u64> {
         let start = self.area.reserve_aligned(frames.len() as u64, align)?;
         for (page, &frame) in (start..).step_by(PAGE_SIZE as usize).zip(frames) {
-            if self.space.map(page, frame, user_flags(writable)).is_err() {
+            if self
+                .space
+                .map(page, frame, user_flags(writable, caching))
+                .is_err()
+            {
                 self.release_pages(start, frames.len());
                 return None;
             }
@@ -74,13 +80,13 @@ impl Process {
     }
 
     /// Maps `frames` at `address` again, with new permissions.
-    pub fn remap_frames(&mut self, address: u64, frames: &[u64], writable: bool) {
+    pub fn remap_frames(&mut self, address: u64, frames: &[u64], writable: bool, caching: Caching) {
         self.unmap_pages(address, frames.len());
         for (page, &frame) in (address..).step_by(PAGE_SIZE as usize).zip(frames) {
             // The page tables for these addresses exist already (the pages
             // were mapped before), so nothing needs allocating.
             self.space
-                .map(page, frame, user_flags(writable))
+                .map(page, frame, user_flags(writable, caching))
                 .expect("remapping a page whose tables exist");
         }
     }
@@ -121,10 +127,11 @@ impl Drop for Process {
     }
 }
 
-fn user_flags(writable: bool) -> Flags {
+fn user_flags(writable: bool, caching: Caching) -> Flags {
     Flags {
         writable,
         executable: false,
         user: true,
+        caching,
     }
 }

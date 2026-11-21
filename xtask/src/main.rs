@@ -6,6 +6,7 @@
 mod build;
 mod check;
 mod qemu;
+mod screenshot;
 mod symbols;
 
 use std::path::PathBuf;

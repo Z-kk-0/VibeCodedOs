@@ -9,4 +9,5 @@ pub mod apic;
 pub mod exceptions;
 pub mod gdt;
 pub mod idt;
+pub mod pat;
 pub mod pit;

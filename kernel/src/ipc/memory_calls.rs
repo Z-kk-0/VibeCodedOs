@@ -23,7 +23,7 @@ pub fn memory_new(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
         }
         let memory = object::Memory::new(pages).ok_or(abi::ERROR_OUT_OF_MEMORY)?;
         let address = process
-            .map_frames_aligned(&memory.frames(), true, align)
+            .map_frames_aligned(&memory.frames(), true, memory.caching(), align)
             .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
         let handle = process.handles.insert(Capability::Memory(OwnedMemory {
             memory,

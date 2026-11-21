@@ -14,7 +14,9 @@
 extern crate alloc;
 
 mod allocator;
+pub mod device;
 pub mod directory;
+pub mod display;
 mod endpoint;
 mod ipc;
 mod memory;

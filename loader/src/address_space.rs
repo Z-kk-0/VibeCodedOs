@@ -2,12 +2,13 @@
 //! DECISIONS.md 015). Built while the firmware can still hand out memory,
 //! switched to right before jumping into the kernel.
 
+use crate::handoff::Handoff;
 use crate::kernel_image::LoadedKernel;
 use crate::uefi::{BootServices, MemoryType};
 use boot_info::{KERNEL_BASE, PHYSICAL_MEMORY_WINDOW};
 use core::arch::asm;
 use paging::{
-    Flags, HUGE_PAGE_SIZE, MapError, Mapper, PAGE_SIZE, PageSize, PageTable, TableMemory,
+    Caching, Flags, HUGE_PAGE_SIZE, MapError, Mapper, PAGE_SIZE, PageSize, PageTable, TableMemory,
 };
 
 pub type Error = &'static str;
@@ -20,12 +21,15 @@ const LOADER_IDENTITY: Flags = Flags {
     writable: true,
     executable: true,
     user: false,
+    caching: Caching::WriteBack,
 };
 
 pub struct AddressSpace {
     /// Physical address of the top-level table (goes into CR3).
     pub root: u64,
     pub window_size: u64,
+    /// How much of the window is mapped uncached: every 2 MiB without RAM.
+    pub uncached_size: u64,
     pub tables_used: u64,
     use_no_execute: bool,
 }
@@ -56,9 +60,10 @@ unsafe impl TableMemory for &mut TablePool {
 pub fn build(
     boot_services: &BootServices,
     kernel: &LoadedKernel,
-    physical_memory_end: u64,
+    handoff: &Handoff,
 ) -> Result<AddressSpace, Error> {
-    let window_size = physical_memory_end
+    let window_size = handoff
+        .physical_memory_end
         .max(MINIMUM_WINDOW)
         .next_multiple_of(GIB);
     let pool_bytes = tables_needed(window_size, kernel.size) * PAGE_SIZE;
@@ -73,7 +78,20 @@ pub fn build(
 
     let use_no_execute = cpu_supports_no_execute();
     let mut mapper = Mapper::new(&mut pool, use_no_execute).map_err(describe)?;
+    let mut uncached_size = 0;
     for physical in (0..window_size).step_by(HUGE_PAGE_SIZE as usize) {
+        // Device memory (no RAM in this 2 MiB) is never cached: a cached
+        // device register would answer from the cache, not the device. Until
+        // now only the firmware's MTRRs made sure of that (DECISIONS.md, 023).
+        let window_flags = if handoff.holds_ram(physical, physical + HUGE_PAGE_SIZE) {
+            Flags::KERNEL_DATA
+        } else {
+            uncached_size += HUGE_PAGE_SIZE;
+            Flags {
+                caching: Caching::Uncached,
+                ..Flags::KERNEL_DATA
+            }
+        };
         // Identity map: the loader keeps running at its physical address
         // right after the switch. The kernel removes it immediately.
         mapper
@@ -84,7 +102,7 @@ pub fn build(
                 PHYSICAL_MEMORY_WINDOW + physical,
                 physical,
                 PageSize::Huge,
-                Flags::KERNEL_DATA,
+                window_flags,
             )
             .map_err(describe)?;
     }
@@ -97,6 +115,7 @@ pub fn build(
             writable: layout.writable,
             executable: layout.executable,
             user: false,
+            caching: Caching::WriteBack,
         };
         let first_page = layout.offset / PAGE_SIZE * PAGE_SIZE;
         for offset in (first_page..layout.offset + layout.size).step_by(PAGE_SIZE as usize) {
@@ -116,6 +135,7 @@ pub fn build(
     Ok(AddressSpace {
         root,
         window_size,
+        uncached_size,
         tables_used: (pool.next - pool_start) / PAGE_SIZE,
         use_no_execute,
     })

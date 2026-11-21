@@ -46,7 +46,8 @@ pub enum MapError {
     Misaligned,
     NotCanonical,
     OutOfTableMemory,
-    /// The page is already mapped to a different frame (or with another size).
+    /// The page is already mapped to a different frame (or with another
+    /// size, or other caching).
     AlreadyMapped,
     /// A huge page already covers this address.
     HugePageInTheWay,
@@ -141,7 +142,10 @@ impl<M: TableMemory> Mapper<M> {
         let existing = unsafe { *leaf };
         let flags = if existing & PRESENT == 0 {
             flags
-        } else if existing & ADDRESS_MASK == physical_address && existing & HUGE_PAGE == huge_bit {
+        } else if existing & ADDRESS_MASK == physical_address
+            && existing & HUGE_PAGE == huge_bit
+            && Flags::from_bits(existing).caching == flags.caching
+        {
             flags.union(Flags::from_bits(existing))
         } else {
             return Err(MapError::AlreadyMapped);

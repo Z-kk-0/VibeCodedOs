@@ -1,5 +1,5 @@
 use super::memory::{AllocateType, MemoryDescriptor, MemoryMapInfo, MemoryType};
-use super::{Handle, Status, TableHeader};
+use super::{Guid, Handle, Status, TableHeader};
 use core::ffi::c_void;
 
 /// Placeholder for functions we don't call; keeps the layout right.
@@ -7,7 +7,7 @@ type Unused = *mut c_void;
 
 /// Firmware services available until `ExitBootServices`. UEFI spec 2.10, §4.4.
 ///
-/// Only the entries up to `exit_boot_services` are listed. We only ever look
+/// Only the entries up to `locate_protocol` are listed. We only ever look
 /// at this table through the firmware's pointer, so the missing tail is fine.
 #[repr(C)]
 pub struct BootServices {
@@ -53,6 +53,25 @@ pub struct BootServices {
     exit: Unused,
     unload_image: Unused,
     exit_boot_services: unsafe extern "efiapi" fn(image: Handle, map_key: usize) -> Status,
+    // Miscellaneous services.
+    get_next_monotonic_count: Unused,
+    stall: Unused,
+    set_watchdog_timer: Unused,
+    // Driver support services.
+    connect_controller: Unused,
+    disconnect_controller: Unused,
+    // Open and close protocol services.
+    open_protocol: Unused,
+    close_protocol: Unused,
+    open_protocol_information: Unused,
+    // Library services.
+    protocols_per_handle: Unused,
+    locate_handle_buffer: Unused,
+    locate_protocol: unsafe extern "efiapi" fn(
+        protocol: *const Guid,
+        registration: *mut c_void,
+        interface: *mut *mut c_void,
+    ) -> Status,
 }
 
 impl BootServices {
@@ -135,6 +154,17 @@ impl BootServices {
             )
         };
         (status, info)
+    }
+
+    /// The first instance of the protocol `guid` the firmware knows, if any
+    /// (spec §7.3.16). Valid until `ExitBootServices`.
+    pub fn locate_protocol(&self, guid: Guid) -> Option<*mut c_void> {
+        let mut interface = core::ptr::null_mut();
+        // SAFETY: `guid` and `interface` are valid for the duration of the
+        // call; no registration key is passed (null is allowed).
+        let status =
+            unsafe { (self.locate_protocol)(&guid, core::ptr::null_mut(), &mut interface) };
+        (status.into_result().is_ok() && !interface.is_null()).then_some(interface)
     }
 
     /// Ends the firmware's reign. Fails if the memory map changed since

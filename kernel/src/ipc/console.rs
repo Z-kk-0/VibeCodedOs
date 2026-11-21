@@ -8,7 +8,7 @@ use super::object::Capability;
 use super::process::Process;
 use crate::memory::physical_to_pointer;
 use alloc::vec::Vec;
-use paging::PAGE_SIZE;
+use paging::{Caching, PAGE_SIZE};
 
 pub fn write(process: &Process, message: &Message) -> Result<(), u64> {
     let attachment = message.attachment.ok_or(abi::ERROR_WRONG_KIND)?;
@@ -22,13 +22,21 @@ pub fn write(process: &Process, message: &Message) -> Result<(), u64> {
 }
 
 /// The first `length` bytes of memory `process` lends a kernel object –
-/// read straight from the frames, so nothing needs mapping.
+/// read straight from the frames, so nothing needs mapping. RAM only.
 pub fn lent_bytes(
     process: &Process,
     attachment: Attachment,
     length: usize,
 ) -> Result<Vec<u8>, u64> {
+    // Device memory may lie outside the physical memory window, and reading
+    // a device behind its owner's back is no business of ours anyway.
     let frames = match process.handles.get(attachment.handle) {
+        Some(Capability::Memory(owned)) if owned.memory.caching() != Caching::WriteBack => {
+            return Err(abi::ERROR_WRONG_KIND);
+        }
+        Some(Capability::Borrowed(borrowed)) if borrowed.caching != Caching::WriteBack => {
+            return Err(abi::ERROR_WRONG_KIND);
+        }
         Some(Capability::Memory(owned)) if !owned.lent => owned.memory.frames(),
         Some(Capability::Borrowed(borrowed)) => borrowed.frames.clone(),
         Some(_) => return Err(abi::ERROR_WRONG_KIND),

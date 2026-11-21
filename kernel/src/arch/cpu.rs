@@ -150,3 +150,22 @@ pub fn has_x2apic() -> bool {
     let features = core::arch::x86_64::__cpuid(1);
     features.ecx & x86::apic::CPUID_1_ECX_X2APIC != 0
 }
+
+/// Loads Hematite's page attribute table (`x86::pat`), which adds
+/// write-combining for framebuffers. Every core runs this once, before it
+/// uses any mapping of that type; all cores must end up with the same table.
+pub fn set_page_attribute_table() {
+    // CPUID leaf 1 exists on every x86_64 CPU and has no side effects.
+    let features = core::arch::x86_64::__cpuid(1);
+    // Every x86_64 CPU has a PAT (AMD64 and Intel 64 both require it), so
+    // this only fires on a broken emulator.
+    assert!(
+        features.edx & x86::pat::CPUID_1_EDX_PAT != 0,
+        "this CPU has no page attribute table"
+    );
+    // SAFETY: the PAT MSR exists (checked above); the new table changes
+    // only entry 1, which no mapping uses yet, so no cached data or
+    // translation changes meaning. The TLB flush is belt and braces.
+    unsafe { write_msr(x86::pat::MSR, x86::pat::msr_value(x86::pat::HEMATITE)) };
+    flush_translation_cache();
+}

@@ -19,16 +19,17 @@ UEFI firmware (OVMF in QEMU)
        │  relocates it for 0xFFFF_FFFF_8000_0000 (static PIE)            loader/src/kernel_image.rs, elf/
        ├─ finds the ACPI root pointer, reserves 2 pages below 1 MiB
        │  where the other cores will start                               loader/src/main.rs
+       ├─ finds the screen: GOP's current mode → framebuffer             loader/src/screen.rs
        ├─ allocates the handoff buffers, peeks at the memory map         loader/src/handoff.rs
-       ├─ builds page tables: kernel (W^X), physical memory window,
-       │  temporary identity map                                         loader/src/address_space.rs, paging/
+       ├─ builds page tables: kernel (W^X), physical memory window
+       │  (2 MiB without RAM: uncached), temporary identity map          loader/src/address_space.rs, paging/
        ├─ final memory map → ExitBootServices → BootInfo
        └─ enables NX + write protection, loads CR3, jumps to _start
             kernel _start: cli, own stack                                kernel/src/arch/start.rs
             kernel_main:                                                 kernel/src/main.rs
               ├─ serial port COM1 (all output)                           kernel/src/serial.rs
               ├─ own GDT + TSS (in the boot core's PerCore), IDT,
-              │  legacy PIC masked                                       kernel/src/arch/
+              │  legacy PIC masked, page attribute table (+ WC)          kernel/src/arch/
               ├─ int3 round trip (tests the interrupt path)
               ├─ APIC timer calibrated with the PIT, 100 Hz, sti         kernel/src/arch/apic.rs
               ├─ waits 10 ticks
@@ -41,18 +42,19 @@ UEFI firmware (OVMF in QEMU)
               ├─ task::init: boot code becomes task 0, idle task created  kernel/src/task/
               ├─ start_other_cores: ACPI MADT → APIC IDs; for each core   kernel/src/arch/smp/, acpi/
               │    INIT, STARTUP ×2 → startup code: real mode → long mode
-              │    → ap_entry: kernel page tables, own GDT/TSS, IDT
+              │    → ap_entry: kernel page tables, PAT, own GDT/TSS, IDT
               │    → other_core_main: joins scheduler, timer on, idles   kernel/src/main.rs
               ├─ "N cores online."          ← the boot test checks N
               ├─ task::check: 4 busy tasks + 1 sleeper must interleave,
               │  on more than one core; freeing their stacks must have
               │  sent TLB shootdowns                                     task/checks.rs
-              ├─ ipc::check: starts only `init` (console + 8 Program     kernel/src/ipc/checks.rs
-              │  handles), waits for its exit code                       programs/init
+              ├─ ipc::check: starts only `init` (console, 10 Program     kernel/src/ipc/checks.rs
+              │  handles, the screen as a Device), waits for its exit    programs/init
               │    init: endpoints, badged sending ends, starts log,
-              │    dir, vandal, hello, owner, giver, shout, intruder;
+              │    dir, vandal, hello, owner, giver, shout, intruder,
+              │    display (gets the screen), paint (draws through it);
               │    checks how each test program ended → exit 0 / n
-              │  afterwards: log, dir, shout keep running, the rest freed
+              │  afterwards: log, dir, shout, display keep running
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ heartbeat: boot task sleeps 10 s at a time; idle tasks run hlt
 ```
@@ -68,7 +70,7 @@ Address space (upper half = kernel, shared by all; lower half = one per user pro
 | `0xFFFF_FFFF_8000_0000` | kernel image (W^X) | `boot_info` |
 | `0xFFFF_FF00_0000_0000` | kernel heap, 448 GiB, grows on demand | `kernel/src/memory/allocator.rs` |
 | `0xFFFF_FF70_0000_0000` | kernel stacks, 64 KiB slots with guard pages | `kernel/src/memory/stacks.rs` |
-| `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`) | `boot_info` |
+| `0xFFFF_8000_0000_0000` | physical memory window (`memory::physical_to_pointer`); RAM write-back, the rest uncached | `boot_info` |
 | `0x0000_7FFF_FFFF_0000` | top of a program's stack (grows on demand up to 8 MiB; guard pages above and below) | `kernel/src/task/program.rs` |
 | `0x0000_1000_0000_0000` | a program's memory objects, owned or borrowed (guard page after each) | `kernel/src/ipc/process.rs` |
 | `0x0000_0000_0040_0000` | a program's image (W^X, user) | `kernel/src/task/program.rs` |
@@ -99,7 +101,8 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 System calls (`abi` crate, register table there): `int 0x80`, number in `rax`. `exit`, `sleep`,
 and the capability calls (DECISIONS 020, 021): `call`, `receive`, `reply`, `memory_new`, `drop`,
 `endpoint_new`, `mint`, `revoke`. Kernel objects answer `call` at once: the console prints, a
-`Program` starts a process, a `Child` says how it ended.
+`Program` starts a process, a `Child` says how it ended, a `Device` opens (its handle becomes the
+device's memory, mapped into the caller).
 Programs use `userlib` (typed wrappers, `println!` via the `log` service, panic handler).
 
 Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020, 021): each process (`ipc/process.rs`) has
@@ -111,9 +114,15 @@ mapping) – a borrow ends with its reply handle. Endpoints (`ipc/endpoint.rs`) 
 last receiving end is gone and keep a generation per badge for `revoke`; queue waits can time out
 (`ipc/timeouts.rs`). The kernel starts only `init`, which wires everything else up.
 
+Devices and caching (DECISIONS 023): a memory object is RAM or *device memory* (`ipc/memory.rs`)
+– same ownership rules, never zeroed or freed, and every mapping of it uses the device's caching
+(`paging::Caching` in the page table's PWT/PCD bits; entry 1 of the page attribute table is
+write-combining, `x86::pat`). The screen's framebuffer is such an object, behind a `Device`
+handle that `init` moves to `display`. Clients lend `display` their pixels (`userlib::display`).
+
 | Program | Kind | Handles it starts with | What it proves |
 |---|---|---|---|
-| `init` | first program | 0 console, 1–8 programs | user space wires itself up |
+| `init` | first program | 0 console, 1–10 programs, 11 screen | user space wires itself up |
 | `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
 | `dir` (`directory`) | service | 0 log, 1 directory endpoint (receive) | names; parked lookups (reply handles) |
 | `shout` | service | 0 log, 1 directory (registers itself) | `&mut` borrow and move work |
@@ -122,6 +131,8 @@ last receiving end is gone and keep a generation per badge for `revoke`; queue w
 | `owner` | program | 0 log, 1 directory, 2 vandal | lent memory comes back; closed endpoints, timeouts, revoke |
 | `giver` | attacker | 0 log, 1 directory | a moved page is gone |
 | `intruder` | attacker | 0 log | forged handles and kernel reads fail |
+| `display` | driver, service | 0 log, 1 directory, 2 screen (device) | a driver in user space; device memory, write-combining |
+| `paint` | program | 0 log, 1 directory | drawing through `display` with lent memory (the boot test's screenshot checks it) |
 
 ## Crates
 
@@ -129,19 +140,19 @@ last receiving end is gone and keep a generation per badge for `revoke`; queue w
 |---|---|---|
 | `loader` | `x86_64-unknown-uefi` | UEFI app: loads the kernel, builds its page tables, leaves the firmware. Hand-written UEFI types in `loader/src/uefi/`. |
 | `kernel` | `x86_64-unknown-none` | The kernel. Everything CPU-specific is in `kernel/src/arch/`. |
-| `boot_info` | both + host | The loader→kernel contract: `BootInfo` (memory regions, ACPI root, core startup pages), address space layout. No UEFI types. |
+| `boot_info` | both + host | The loader→kernel contract: `BootInfo` (memory regions, ACPI root, core startup pages, framebuffer), address space layout. No UEFI types. |
 | `acpi` | any + host | Just enough ACPI to find the CPU cores: RSDP → XSDT/RSDT → MADT, checksums. Memory access via a trait. Unit-tested. |
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
-| `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages, translate, clear. Memory access via a trait. Unit-tested. |
+| `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages with permissions and caching, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `heap` | any + host | Heap allocator: size classes in self-aligned slabs (returned when empty) + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
 | `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, blocking, freeing exited tasks; core sets for up to 256 cores. Unit-tested. |
-| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs). Unit-tested. |
+| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs, the page attribute table). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
-| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges. |
-| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, a heap (`alloc`), `println!`, panic handler. |
+| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges, device info (pixel formats). |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, the directory and display protocols, a heap (`alloc`), `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
-| `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`. |
+| `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`; checks QEMU screenshots. |
 
 Rule of thumb: logic that is "bytes in, bytes out" goes into a host-testable crate with unit tests;
 code that executes privileged instructions stays in `kernel`/`loader` and is covered by the
@@ -167,10 +178,11 @@ Done:
       moved or lent `&`/`&mut` – enforced by the page tables; `log` service (DECISIONS 020)
 - [x] IPC without limits: reply handles, closed endpoints, timeouts, revoke per badge; `init`
       starts and wires up everything in user space, `directory` service (DECISIONS 021)
+- [x] Screen: framebuffer from UEFI GOP, caching per mapping (PAT, write-combining), device
+      memory as capabilities, `display` – the first driver in user space – and `paint`
+      (DECISIONS 023)
 
-Next, in order (each one a milestone with its own decision entry):
-1. **Framebuffer** (UEFI GOP) – Hematite gets a screen. Design with the owner first: probably the
-   first real driver in user space, which needs a device-memory capability. (#1)
+Next: decided together with the owner – candidates are the open `design` and `idea` issues.
 
 Open work is tracked as GitHub issues (https://github.com/Z-kk-0/VibeCodedOs/issues): `roadmap`
 for the next milestone, `design` for questions decided together with the owner, `limit` for the
@@ -188,8 +200,9 @@ known limits below, `idea` for things worth considering.
 - IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; directory names are first come, first served.
 - Upper-half top-level page table entries must all exist before the first program starts
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.
-- The physical memory window maps device memory with normal attributes; the firmware's MTRRs keep
-  it uncached. Proper per-device mappings come with the first real drivers.
+- Screen (DECISIONS 023): one, in the firmware's mode, 32-bit RGB/BGR only. `display` handles one
+  request at a time and copies whole areas (no double buffering). The framebuffer may also lie in
+  the physical memory window (uncached there; the kernel never touches it).
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

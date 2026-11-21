@@ -54,6 +54,7 @@ fn releasing_the_lower_half_reports_pages_and_tables() {
         writable: true,
         executable: false,
         user: true,
+        caching: Caching::WriteBack,
     };
     let mut memory = FakeMemory::new(16);
     let mut mapper = mapper(&mut memory);

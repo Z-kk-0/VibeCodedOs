@@ -17,8 +17,8 @@ use crate::sync::SpinLock;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use frame_table::FrameNumber;
 use paging::{
-    ENTRIES_PER_TABLE, Flags, LOWER_HALF_ROOT_ENTRIES, MapError, Mapper, PAGE_SIZE, PageSize,
-    PageTable, Released, TableMemory, Translation,
+    Caching, ENTRIES_PER_TABLE, Flags, LOWER_HALF_ROOT_ENTRIES, MapError, Mapper, PAGE_SIZE,
+    PageSize, PageTable, Released, TableMemory, Translation,
 };
 
 /// Root entries 256–511: the upper half, the kernel's.
@@ -166,6 +166,7 @@ pub fn build_core_startup_tables(root_page: u64, code_page: u64) -> Result<(), M
         writable: false,
         executable: true,
         user: false,
+        caching: Caching::WriteBack,
     };
     tables(root_page).map(code_page, code_page, PageSize::Normal, code)
 }

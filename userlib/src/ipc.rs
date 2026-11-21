@@ -29,6 +29,7 @@ impl Error {
             abi::ERROR_TIMED_OUT => "timed out",
             abi::ERROR_REVOKED => "revoked",
             abi::ERROR_BAD_ARGUMENT => "bad argument",
+            abi::ERROR_NO_DEVICE => "no such device",
             _ => "unknown error",
         }
     }

@@ -13,6 +13,7 @@ mod address_space;
 mod console;
 mod handoff;
 mod kernel_image;
+mod screen;
 mod uefi;
 
 use console::Console;
@@ -58,16 +59,27 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
         "ACPI root at {:#x}, core startup pages at {:#x}.",
         platform.acpi_root, platform.core_startup
     );
+    let screen = platform.framebuffer;
+    if screen.exists() {
+        let _ = writeln!(
+            console,
+            "Screen: {}x{} pixels ({:?}), framebuffer at {:#x}.",
+            screen.width, screen.height, screen.format, screen.address
+        );
+    } else {
+        let _ = writeln!(console, "No screen we can draw on.");
+    }
 
     let handoff =
         handoff::prepare(boot_services).unwrap_or_else(|message| fail(&mut console, message));
-    let address_space = address_space::build(boot_services, &kernel, handoff.physical_memory_end)
+    let address_space = address_space::build(boot_services, &kernel, &handoff)
         .unwrap_or_else(|message| fail(&mut console, message));
     let _ = writeln!(
         console,
-        "Page tables: {} tables, physical memory window {} GiB. Leaving the firmware...",
+        "Page tables: {} tables, physical memory window {} GiB ({} MiB device memory, uncached). Leaving the firmware...",
         address_space.tables_used,
-        address_space.window_size >> 30
+        address_space.window_size >> 30,
+        address_space.uncached_size >> 20
     );
 
     match handoff.finish(boot_services, image, console, platform) {
@@ -79,8 +91,9 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
     }
 }
 
-/// What the kernel needs to start the other CPU cores. Neither is fatal if
-/// missing: the kernel then simply runs on one core (0 = "none").
+/// What the kernel needs to know about the machine besides its memory. None
+/// of it is fatal if missing: without ACPI or startup pages the kernel runs
+/// on one core (0 = "none"), without a screen it draws nowhere.
 fn find_platform(system_table: &SystemTable, boot_services: &BootServices) -> Platform {
     let acpi_root = system_table
         .find_configuration_table(ACPI_20_TABLE)
@@ -96,6 +109,7 @@ fn find_platform(system_table: &SystemTable, boot_services: &BootServices) -> Pl
     Platform {
         acpi_root,
         core_startup,
+        framebuffer: screen::find(boot_services),
     }
 }
 

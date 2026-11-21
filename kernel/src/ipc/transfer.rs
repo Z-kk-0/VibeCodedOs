@@ -18,6 +18,7 @@ use super::object::{Capability, Lend};
 use super::process::Process;
 use crate::task::Tasks;
 use alloc::vec::Vec;
+use paging::Caching;
 use scheduling::TaskId;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,7 @@ enum Plan {
     Copy(Capability),
     Memory {
         frames: Vec<u64>,
+        caching: Caching,
         receiver_writable: bool,
         access: u64,
     },
@@ -66,6 +68,7 @@ fn plan(process: &Process, attachment: Attachment, phase: Phase) -> Result<Plan,
             };
             Ok(Plan::Memory {
                 frames: owned.memory.frames(),
+                caching: owned.memory.caching(),
                 receiver_writable,
                 access,
             })
@@ -101,7 +104,9 @@ pub fn give_to_child(
     let mut addresses = Vec::with_capacity(plans.len());
     for plan in &plans {
         let address = match plan {
-            Plan::Memory { frames, .. } => match child.map_frames(frames, true) {
+            Plan::Memory {
+                frames, caching, ..
+            } => match child.map_frames(frames, true, *caching) {
                 Some(address) => Some(address),
                 None => {
                     // Undo: the frames are the parent's, not the child's.
@@ -143,24 +148,25 @@ pub fn transfer(
     phase: Phase,
 ) -> Result<(Received, Option<Lend>), u64> {
     let handle = attachment.handle;
-    let (frames, receiver_writable, access) = match plan(process(tasks, from)?, attachment, phase)?
-    {
-        Plan::Move => {
-            let capability = process(tasks, from)?
-                .handles
-                .remove(handle)
-                .ok_or(abi::ERROR_BAD_HANDLE)?;
-            return Ok((give(tasks, to, capability)?, None));
-        }
-        Plan::Copy(capability) => return Ok((give(tasks, to, capability)?, None)),
-        Plan::Memory {
-            frames,
-            receiver_writable,
-            access,
-        } => (frames, receiver_writable, access),
-    };
+    let (frames, caching, receiver_writable, access) =
+        match plan(process(tasks, from)?, attachment, phase)? {
+            Plan::Move => {
+                let capability = process(tasks, from)?
+                    .handles
+                    .remove(handle)
+                    .ok_or(abi::ERROR_BAD_HANDLE)?;
+                return Ok((give(tasks, to, capability)?, None));
+            }
+            Plan::Copy(capability) => return Ok((give(tasks, to, capability)?, None)),
+            Plan::Memory {
+                frames,
+                caching,
+                receiver_writable,
+                access,
+            } => (frames, caching, receiver_writable, access),
+        };
     let address = process(tasks, to)?
-        .map_frames(&frames, receiver_writable)
+        .map_frames(&frames, receiver_writable, caching)
         .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
     let pages = frames.len() as u64;
     let capability = take_from_sender(process(tasks, from)?, attachment, frames, address);

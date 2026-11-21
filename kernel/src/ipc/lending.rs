@@ -34,12 +34,12 @@ pub(super) fn take_from_sender(
         unreachable!("checked by plan()");
     };
     owned.lent = true;
-    let own_address = owned.address;
+    let (own_address, caching) = (owned.address, owned.memory.caching());
     let exclusive = attachment.mode == Mode::LendExclusive;
     if exclusive {
         sender.unmap_pages(own_address, frames.len()); // &mut: the owner can't look
     } else {
-        sender.remap_frames(own_address, &frames, false); // &: nobody can write
+        sender.remap_frames(own_address, &frames, false, caching); // &: nobody can write
     }
     // The lender is blocked in `call` and can't try for itself, so the
     // kernel checks its own work: the rule must hold in the page tables.
@@ -66,6 +66,7 @@ pub(super) fn take_from_sender(
         frames,
         address,
         access,
+        caching,
     })
 }
 
@@ -81,7 +82,8 @@ pub fn end_lend(tasks: &mut Tasks, lender: TaskId, lend: Lend) {
         && let Some(Capability::Memory(owned)) = lender.handles.get_mut(lend.lender)
     {
         owned.lent = false;
-        let (address, frames) = (owned.address, owned.memory.frames());
-        lender.remap_frames(address, &frames, true);
+        let (address, frames, caching) =
+            (owned.address, owned.memory.frames(), owned.memory.caching());
+        lender.remap_frames(address, &frames, true, caching);
     }
 }

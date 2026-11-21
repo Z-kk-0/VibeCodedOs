@@ -6,7 +6,7 @@ use crate::ipc::{Capability, Process};
 use crate::memory::{AddressSpace, physical_to_pointer};
 use alloc::vec;
 use elf::ElfFile;
-use paging::{Flags, PAGE_SIZE};
+use paging::{Caching, Flags, PAGE_SIZE};
 use scheduling::TaskId;
 
 /// Programs are position-independent and moved here: low, but not at 0,
@@ -24,6 +24,7 @@ const USER_DATA: Flags = Flags {
     writable: true,
     executable: false,
     user: true,
+    caching: Caching::WriteBack,
 };
 
 pub type Error = &'static str;
@@ -60,6 +61,7 @@ pub fn load_program(name: &'static str, file: &[u8]) -> Result<TaskContext, Erro
             writable: layout.writable,
             executable: layout.executable,
             user: true,
+            caching: Caching::WriteBack,
         };
         let first_page = layout.offset / PAGE_SIZE * PAGE_SIZE;
         for offset in (first_page..layout.offset + layout.size).step_by(PAGE_SIZE as usize) {

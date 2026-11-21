@@ -51,6 +51,7 @@ pub fn init() {
         idt::init();
         pic::disable();
     }
+    cpu::set_page_attribute_table();
     per_core::register(&BOOT_CORE);
     per_core::set_online(&BOOT_CORE);
 }

@@ -10,7 +10,9 @@
 
 use crate::console::Console;
 use crate::uefi::{BootServices, Handle, MemoryDescriptor, MemoryType};
-use boot_info::{BootInfo, MemoryKind, MemoryRegion, PHYSICAL_MEMORY_WINDOW, RegionList};
+use boot_info::{
+    BootInfo, Framebuffer, MemoryKind, MemoryRegion, PHYSICAL_MEMORY_WINDOW, RegionList,
+};
 use core::mem::size_of;
 
 pub type Error = &'static str;
@@ -24,12 +26,16 @@ const MAX_EXIT_ATTEMPTS: usize = 3;
 pub struct Platform {
     pub acpi_root: u64,
     pub core_startup: u64,
+    pub framebuffer: Framebuffer,
 }
 
 pub struct Handoff {
     raw_map: &'static mut [u8],
     boot_area: &'static mut [u8],
     capacity: usize,
+    /// The first look at the memory map, kept in `raw_map` until `finish`.
+    first_map_size: usize,
+    descriptor_size: usize,
     /// End of the highest physical address range that isn't "reserved".
     pub physical_memory_end: u64,
 }
@@ -68,11 +74,25 @@ pub fn prepare(boot_services: &BootServices) -> Result<Handoff, Error> {
         raw_map,
         boot_area,
         capacity,
+        first_map_size: map.size,
+        descriptor_size: map.descriptor_size,
         physical_memory_end,
     })
 }
 
 impl Handoff {
+    /// Whether any RAM lies in `start..end` – by the map `prepare` read.
+    /// What we allocated since only turned RAM into other kinds of RAM.
+    pub fn holds_ram(&self, start: u64, end: u64) -> bool {
+        descriptors(self.raw_map, self.first_map_size, self.descriptor_size).any(|descriptor| {
+            let region_end =
+                descriptor.physical_start + descriptor.number_of_pages * boot_info::PAGE_SIZE;
+            kind_of(descriptor.memory_type).is_ram_we_manage()
+                && descriptor.physical_start < end
+                && start < region_end
+        })
+    }
+
     /// Hands the machine from the firmware to us. Returns the `BootInfo` at
     /// its address in the physical memory window (where the kernel sees it).
     ///
@@ -159,6 +179,7 @@ fn write_boot_info(
             region_count,
             platform.acpi_root,
             platform.core_startup,
+            platform.framebuffer,
         ))
     };
     PHYSICAL_MEMORY_WINDOW + area_physical

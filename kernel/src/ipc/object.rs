@@ -1,12 +1,11 @@
 //! The kernel objects a handle can stand for (DECISIONS.md, 020 and 021).
 
 use super::endpoint::Endpoint;
-use crate::memory::{allocate_frame, free_frame, physical_to_pointer};
+pub use super::memory::{Device, Memory};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use capability::Handle;
-use frame_table::FrameNumber;
-use paging::PAGE_SIZE;
+use paging::Caching;
 use scheduling::TaskId;
 
 /// What one slot of a process's handle table holds.
@@ -24,6 +23,8 @@ pub enum Capability {
     Program(ProgramCapability),
     /// A process we started; `call` waits until it has ended.
     Child(TaskId),
+    /// A device's memory, not opened yet; `call` opens it (see `Device`).
+    Device(Device),
 }
 
 impl Capability {
@@ -97,6 +98,8 @@ pub struct BorrowedMemory {
     pub address: u64,
     /// `abi::ACCESS_SHARED` or `abi::ACCESS_EXCLUSIVE`.
     pub access: u64,
+    /// The lender's memory's; anything but write-back is device memory.
+    pub caching: Caching,
 }
 
 pub struct ReplyCapability {
@@ -118,45 +121,4 @@ pub struct Lend {
 pub struct ProgramCapability {
     pub name: &'static str,
     pub image: &'static [u8],
-}
-
-/// Physical pages, zeroed when made, freed when dropped.
-pub struct Memory {
-    frames: Vec<FrameNumber>,
-}
-
-impl Memory {
-    pub fn new(pages: u64) -> Option<Self> {
-        let mut memory = Self { frames: Vec::new() };
-        for _ in 0..pages {
-            // On failure, dropping `memory` returns what we got so far.
-            let frame = allocate_frame()?;
-            // SAFETY: a fresh frame we own, reached through the window.
-            unsafe {
-                physical_to_pointer(frame.start_address()).write_bytes(0, PAGE_SIZE as usize)
-            };
-            memory.frames.push(frame);
-        }
-        Some(memory)
-    }
-
-    pub fn frames(&self) -> Vec<u64> {
-        self.frames
-            .iter()
-            .map(|frame| frame.start_address())
-            .collect()
-    }
-
-    pub fn pages(&self) -> u64 {
-        self.frames.len() as u64
-    }
-}
-
-impl Drop for Memory {
-    /// Must not be mapped anywhere anymore (the owner unmaps it first).
-    fn drop(&mut self) {
-        for frame in self.frames.drain(..) {
-            free_frame(frame);
-        }
-    }
 }

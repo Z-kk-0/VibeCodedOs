@@ -33,7 +33,7 @@ pub const SLEEP: u64 = 2;
 /// for the reply, which comes back like a received message. The timeout
 /// only counts while no receiver has taken the call (DECISIONS.md, 021).
 /// Kernel objects answer at once: the console prints, a program starts
-/// (`SPAWN_*`), a child reports how it ended (`CHILD_*`).
+/// (`SPAWN_*`), a child reports how it ended (`CHILD_*`), a device opens.
 pub const CALL: u64 = 3;
 /// `receive(endpoint, timeout)` – waits for the next message on an
 /// endpoint this program may receive on. Comes with a reply handle.
@@ -96,6 +96,15 @@ pub const SPAWN_ENTRY_SIZE: u64 = 16;
 pub const CHILD_EXITED: u64 = 0;
 pub const CHILD_KILLED: u64 = 1;
 
+/// `call(device)` opens device memory (DECISIONS.md, 023): the handle becomes
+/// an owned `Memory` object, mapped with the caching the device needs (the
+/// screen: write-combining). The reply brings it like received memory
+/// (`rsi`, `rdx`, `rcx`) plus four words the kernel knows about the device.
+/// The screen's: width, height, stride (pixels per row in memory) and the
+/// pixel format, one of `PIXEL_*` (4 bytes per pixel, in that byte order).
+pub const PIXEL_RED_GREEN_BLUE: u64 = 0;
+pub const PIXEL_BLUE_GREEN_RED: u64 = 1;
+
 /// Results from `u64::MAX` downwards are errors.
 pub const ERROR_UNKNOWN_CALL: u64 = u64::MAX;
 /// The handle doesn't exist (or no longer does).
@@ -124,8 +133,10 @@ pub const ERROR_TIMED_OUT: u64 = u64::MAX - 10;
 pub const ERROR_REVOKED: u64 = u64::MAX - 11;
 /// A number that makes no sense here, e.g. an alignment that isn't a power of two.
 pub const ERROR_BAD_ARGUMENT: u64 = u64::MAX - 12;
+/// The machine doesn't have that device (e.g. no screen).
+pub const ERROR_NO_DEVICE: u64 = u64::MAX - 13;
 
-const LOWEST_ERROR: u64 = ERROR_BAD_ARGUMENT;
+const LOWEST_ERROR: u64 = ERROR_NO_DEVICE;
 
 pub fn is_error(result: u64) -> bool {
     result >= LOWEST_ERROR
@@ -183,7 +194,7 @@ mod tests {
 
     #[test]
     fn every_error_counts_as_an_error() {
-        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_BAD_ARGUMENT] {
+        for error in [ERROR_UNKNOWN_CALL, ERROR_BAD_HANDLE, ERROR_NO_DEVICE] {
             assert!(is_error(error));
         }
         assert!(!is_error(0));

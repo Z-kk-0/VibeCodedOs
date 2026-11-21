@@ -6,12 +6,16 @@
 
 mod boot_services;
 mod configuration_table;
+mod graphics;
 mod memory;
 mod system_table;
 mod text_output;
 
 pub use boot_services::BootServices;
-pub use configuration_table::{ACPI_10_TABLE, ACPI_20_TABLE, ConfigurationTable};
+pub use configuration_table::{ACPI_10_TABLE, ACPI_20_TABLE, ConfigurationTable, Guid};
+pub use graphics::{
+    GRAPHICS_OUTPUT_PROTOCOL, GraphicsOutputProtocol, PIXEL_BLUE_GREEN_RED, PIXEL_RED_GREEN_BLUE,
+};
 pub use memory::{MemoryDescriptor, MemoryType};
 pub use system_table::SystemTable;
 pub use text_output::SimpleTextOutputProtocol;

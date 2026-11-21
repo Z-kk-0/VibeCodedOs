@@ -31,6 +31,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         boot_info::MAGIC,
         "BootInfo pointer is garbage"
     );
+    let screen = boot_info.framebuffer;
     println!("\nHematite kernel: the firmware is gone, the machine is ours.");
 
     arch::init();
@@ -57,7 +58,18 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let cores = arch::start_other_cores(boot_info);
     println!("{cores} cores online.");
     task::check();
-    ipc::check();
+    if screen.exists() {
+        println!(
+            "Screen: {}x{} pixels, {} KiB framebuffer at {:#x} - init gets it as a device.",
+            screen.width,
+            screen.height,
+            screen.size / 1024,
+            screen.address
+        );
+    } else {
+        println!("No screen: the display service will draw nowhere.");
+    }
+    ipc::check(screen);
 
     println!("Hematite kernel ready.");
 

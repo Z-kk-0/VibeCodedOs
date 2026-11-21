@@ -95,7 +95,8 @@ fn mapping_the_same_frame_again_widens_permissions() {
         Flags {
             writable: true,
             executable: true,
-            user: false
+            user: false,
+            caching: Caching::WriteBack,
         }
     );
 }
@@ -139,4 +140,31 @@ fn canonical_addresses() {
     assert!(is_canonical(0xFFFF_8000_0000_0000));
     assert!(!is_canonical(0x0000_8000_0000_0000));
     assert!(!is_canonical(0xFFFF_7FFF_FFFF_FFFF));
+}
+
+#[test]
+fn caching_is_kept_and_must_not_be_mixed() {
+    let mut memory = FakeMemory::new(16);
+    let mut mapper = mapper(&mut memory);
+    let framebuffer = Flags {
+        caching: Caching::WriteCombining,
+        ..Flags::KERNEL_DATA
+    };
+    let registers = Flags {
+        caching: Caching::Uncached,
+        ..Flags::KERNEL_DATA
+    };
+    mapper
+        .map(HIGH, 0x1000, PageSize::Normal, framebuffer)
+        .unwrap();
+    mapper
+        .map(HIGH + 0x20_0000, 0x20_0000, PageSize::Huge, registers)
+        .unwrap();
+    assert_eq!(mapper.translate(HIGH).unwrap().flags, framebuffer);
+    assert_eq!(mapper.translate(HIGH + 0x20_0000).unwrap().flags, registers);
+    // The same frame again, but cached differently: two views that disagree.
+    assert_eq!(
+        mapper.map(HIGH, 0x1000, PageSize::Normal, Flags::KERNEL_DATA),
+        Err(MapError::AlreadyMapped)
+    );
 }

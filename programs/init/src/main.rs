@@ -9,8 +9,12 @@
 //! `shout` starts last on purpose: `owner` and `giver` look it up in the
 //! directory before it exists, and the directory makes them wait.
 //!
-//! Handles: 0 = console, 1–8 = the programs log, dir, shout, vandal,
-//! hello, owner, giver, intruder.
+//! The screen goes to `display` and nobody else (DECISIONS.md, 023): init
+//! moves the device handle away without ever opening it. `paint` draws
+//! through `display`.
+//!
+//! Handles: 0 = console, 1–10 = the programs log, dir, shout, vandal,
+//! hello, owner, giver, intruder, display, paint; 11 = the screen (device).
 
 #![no_std]
 #![no_main]
@@ -28,6 +32,9 @@ const HELLO: Handle = Handle(5);
 const OWNER: Handle = Handle(6);
 const GIVER: Handle = Handle(7);
 const INTRUDER: Handle = Handle(8);
+const DISPLAY: Handle = Handle(9);
+const PAINT: Handle = Handle(10);
+const SCREEN: Handle = Handle(11);
 /// The CPU exception the attackers must be stopped by.
 const PAGE_FAULT: u64 = 14;
 /// Handed to hello at its start, in a page of its own.
@@ -53,12 +60,19 @@ extern "C" fn _start() -> ! {
         log_owner,
         log_giver,
         log_intruder,
+        log_display,
+        log_paint,
     ] = [
-        "dir", "shout", "vandal", "hello", "owner", "giver", "intruder",
+        "dir", "shout", "vandal", "hello", "owner", "giver", "intruder", "display", "paint",
     ]
     .map(log_for);
-    let [directory_shout, directory_owner, directory_giver] =
-        ["shout", "owner", "giver"].map(directory_for);
+    let [
+        directory_shout,
+        directory_owner,
+        directory_giver,
+        directory_display,
+        directory_paint,
+    ] = ["shout", "owner", "giver", "display", "paint"].map(directory_for);
 
     must(spawn(LOG, [Pass::Move(log), Pass::Move(CONSOLE)]), 7);
     set_log(my_log);
@@ -97,6 +111,21 @@ extern "C" fn _start() -> ! {
         13,
     );
     let intruder = must(spawn(INTRUDER, [Pass::Move(log_intruder)]), 14);
+    must(
+        spawn(
+            DISPLAY,
+            [
+                Pass::Move(log_display),
+                Pass::Move(directory_display),
+                Pass::Move(SCREEN),
+            ],
+        ),
+        16,
+    );
+    let paint = must(
+        spawn(PAINT, [Pass::Move(log_paint), Pass::Move(directory_paint)]),
+        17,
+    );
 
     let expected = [
         ("hello", hello, Ended::Exited(0)),
@@ -104,7 +133,9 @@ extern "C" fn _start() -> ! {
         ("vandal", vandal, Ended::Killed(PAGE_FAULT)),
         ("giver", giver, Ended::Killed(PAGE_FAULT)),
         ("intruder", intruder, Ended::Killed(PAGE_FAULT)),
+        ("paint", paint, Ended::Exited(0)),
     ];
+    let programs = expected.len();
     let mut failures = 0;
     for (name, child, must_end) in expected {
         let ended = wait(child);
@@ -114,7 +145,7 @@ extern "C" fn _start() -> ! {
         }
     }
     if failures == 0 {
-        println!("All 5 programs ended as they should. The services keep running.");
+        println!("All {programs} programs ended as they should. The services keep running.");
     }
     exit(failures)
 }

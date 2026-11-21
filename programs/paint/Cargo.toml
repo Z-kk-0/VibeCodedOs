@@ -1,0 +1,8 @@
+[package]
+name = "paint"
+version = "0.1.0"
+edition = "2024"
+description = "Paints Hematite's first picture, through the display service"
+
+[dependencies]
+userlib = { path = "../../userlib" }

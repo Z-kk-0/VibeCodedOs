@@ -26,6 +26,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "display"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 
@@ -107,6 +114,13 @@ dependencies = [
 [[package]]
 name = "paging"
 version = "0.1.0"
+
+[[package]]
+name = "paint"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
 
 [[package]]
 name = "scheduling"

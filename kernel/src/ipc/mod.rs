@@ -13,10 +13,12 @@
 mod checks;
 mod console;
 mod delivery;
+mod device;
 mod endpoint;
 mod endpoint_calls;
 mod exit;
 mod lending;
+mod memory;
 mod memory_calls;
 mod message;
 mod object;
@@ -77,6 +79,10 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
             return spawn::prepare(tasks, me, program, &message, frame);
         }
         Some(&Capability::Child(child)) => return spawn::wait_for(tasks, core, child, frame),
+        Some(Capability::Device(_)) => {
+            device::open(process, Handle(frame.rdi), &message, frame);
+            return Next::Continue;
+        }
         Some(Capability::Endpoint(endpoint)) if endpoint.is_revoked() => {
             return fail_now(frame, abi::ERROR_REVOKED);
         }

@@ -1,10 +1,13 @@
 //! Booting Hematite in QEMU: in a window (`run`) or headless, checking the
-//! serial log for an expected line (`boot-test`).
+//! serial log for an expected line and, after a normal boot, the screen
+//! (`boot-test`).
 
 use crate::build::build;
+use crate::screenshot;
 use crate::{Crash, Options, Result, root, run_command};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -30,16 +33,22 @@ pub fn boot_test(options: Options) -> Result {
     let esp = build(options)?;
     let expected = options.crash.marker().unwrap_or(READY_MARKER);
     let log_path = root().join("build").join("serial.log");
+    let screen_path = root().join("build").join("screen.ppm");
     let _ = fs::remove_file(&log_path);
+    let _ = fs::remove_file(&screen_path);
 
     let mut qemu = qemu_command(&esp, options)?;
     qemu.args(["-display", "none", "-serial"])
         .arg(format!("file:{}", log_path.display()))
         .stdout(Stdio::null());
+    // QEMU's monitor on our pipe: how we ask it for a screenshot.
+    qemu.args(["-monitor", "stdio"]).stdin(Stdio::piped());
     let mut child = qemu
         .spawn()
         .map_err(|error| format!("cannot start QEMU: {error}"))?;
     let found = wait_for_line(&log_path, expected, &mut child);
+    let screenshot =
+        (found && options.crash == Crash::None).then(|| take_screenshot(&mut child, &screen_path));
     let _ = child.kill();
     let _ = child.wait();
 
@@ -50,6 +59,9 @@ pub fn boot_test(options: Options) -> Result {
     if found && options.crash == Crash::None && !log.contains(&cores_marker) {
         return Err(format!("boot test failed: no '{cores_marker}'"));
     }
+    if let Some(taken) = screenshot {
+        taken.and_then(|()| screenshot::check(&screen_path))?;
+    }
     if found {
         println!("\nBOOT TEST OK ('{expected}')");
         Ok(())
@@ -59,6 +71,27 @@ pub fn boot_test(options: Options) -> Result {
             BOOT_TEST_TIMEOUT.as_secs()
         ))
     }
+}
+
+/// Asks QEMU's monitor for a screendump and waits until the file is complete.
+fn take_screenshot(qemu: &mut Child, path: &Path) -> Result {
+    // Forward slashes: the monitor reads backslashes as escapes; Windows
+    // takes either.
+    let path_text = path.display().to_string().replace('\\', "/");
+    let command = format!("screendump {path_text}\n");
+    let monitor = qemu.stdin.as_mut().ok_or("QEMU has no monitor pipe")?;
+    monitor
+        .write_all(command.as_bytes())
+        .and_then(|()| monitor.flush())
+        .map_err(|error| format!("cannot talk to the QEMU monitor: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if fs::read(path).is_ok_and(|bytes| screenshot::parse_ppm(&bytes).is_ok()) {
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100));
+    }
+    Err("QEMU took no screenshot within 5 s".into())
 }
 
 fn wait_for_line(log_path: &Path, expected: &str, qemu: &mut Child) -> bool {

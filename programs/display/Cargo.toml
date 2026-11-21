@@ -1,0 +1,8 @@
+[package]
+name = "display"
+version = "0.1.0"
+edition = "2024"
+description = "The display service: owns the screen, draws on it for others"
+
+[dependencies]
+userlib = { path = "../../userlib" }

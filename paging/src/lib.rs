@@ -17,7 +17,7 @@ mod release;
 mod tests;
 mod unmap;
 
-pub use entry::Flags;
+pub use entry::{Caching, Flags};
 pub use mapper::{MapError, Mapper, PageSize, PageTable, TableMemory, Translation};
 pub use release::Released;
 pub use unmap::UnmapError;

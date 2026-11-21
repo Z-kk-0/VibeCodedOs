@@ -17,3 +17,5 @@ program!(HELLO, "hello");
 program!(OWNER, "owner");
 program!(GIVER, "giver");
 program!(INTRUDER, "intruder");
+program!(DISPLAY, "display");
+program!(PAINT, "paint");

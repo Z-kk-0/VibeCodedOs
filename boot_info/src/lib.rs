@@ -19,8 +19,10 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod framebuffer;
 mod region_list;
 
+pub use framebuffer::{Framebuffer, PixelFormat};
 pub use region_list::{RegionList, RegionListFull};
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -49,6 +51,8 @@ pub struct BootInfo {
     /// Physical address of `CORE_STARTUP_PAGES` pages below
     /// `CORE_STARTUP_LIMIT` (kind `CoreStartup`), 0 if there were none.
     pub core_startup: u64,
+    /// The screen, if the firmware set one up (`Framebuffer::NONE` if not).
+    pub framebuffer: Framebuffer,
 }
 
 impl BootInfo {
@@ -60,6 +64,7 @@ impl BootInfo {
         count: usize,
         acpi_root: u64,
         core_startup: u64,
+        framebuffer: Framebuffer,
     ) -> Self {
         Self {
             magic: MAGIC,
@@ -67,6 +72,7 @@ impl BootInfo {
             memory_region_count: count,
             acpi_root,
             core_startup,
+            framebuffer,
         }
     }
 
