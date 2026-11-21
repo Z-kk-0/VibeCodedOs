@@ -15,12 +15,16 @@
 //!
 //! The keyboard (DECISIONS.md, 025) works the same way: its interrupt and
 //! ports go to `keyboard` alone, which calls `terminal` with every key –
-//! through an endpoint init makes for just those two. The terminal starts
-//! only after paint is done, so its strip lands on top of the picture.
+//! through the terminal's endpoint. The terminal starts only after paint is
+//! done, so its strip lands on top of the picture.
 //!
-//! Handles: 0 = console, 1–12 = the programs log, dir, shout, vandal,
-//! hello, owner, giver, intruder, display, paint, keyboard, terminal;
-//! 13 = the screen (device); 14, 15 = the keyboard's ports and interrupt.
+//! The shell (DECISIONS.md, 026) reads its commands from the terminal, and
+//! may start exactly the programs init gives it a copy of: `SHELL_PROGRAMS`.
+//!
+//! Handles: 0 = console, 1–13 = the programs log, dir, shout, vandal,
+//! hello, owner, giver, intruder, display, paint, keyboard, terminal,
+//! shell; 14 = the screen (device); 15, 16 = the keyboard's ports and
+//! interrupt.
 
 #![no_std]
 #![no_main]
@@ -42,9 +46,17 @@ const DISPLAY: Handle = Handle(9);
 const PAINT: Handle = Handle(10);
 const KEYBOARD: Handle = Handle(11);
 const TERMINAL: Handle = Handle(12);
-const SCREEN: Handle = Handle(13);
-const KEYBOARD_PORTS: Handle = Handle(14);
-const KEYBOARD_INTERRUPT: Handle = Handle(15);
+const SHELL: Handle = Handle(13);
+const SCREEN: Handle = Handle(14);
+const KEYBOARD_PORTS: Handle = Handle(15);
+const KEYBOARD_INTERRUPT: Handle = Handle(16);
+/// What the shell may start – nothing else exists for it.
+const SHELL_PROGRAMS: [(&str, Handle); 4] = [
+    ("hello", HELLO),
+    ("intruder", INTRUDER),
+    ("giver", GIVER),
+    ("paint", PAINT),
+];
 /// The CPU exception the attackers must be stopped by.
 const PAGE_FAULT: u64 = 14;
 /// Handed to hello at its start, in a page of its own.
@@ -60,8 +72,10 @@ extern "C" fn _start() -> ! {
     let directory_for = |name| must(mint(directory, abi::badge_from_name(name)), 4);
     let vandal = must(endpoint_new(), 5);
     let vandal_for_owner = must(mint(vandal, abi::badge_from_name("owner")), 6);
-    let keys = must(endpoint_new(), 18);
-    let keys_for_keyboard = must(mint(keys, abi::badge_from_name("keyboard")), 19);
+    let terminal = must(endpoint_new(), 18);
+    let terminal_for = |name| must(mint(terminal, abi::badge_from_name(name)), 19);
+    let terminal_for_keyboard = terminal_for("keyboard");
+    let terminal_for_shell = terminal_for("shell");
 
     let my_log = log_for("init");
     let [
@@ -88,7 +102,11 @@ extern "C" fn _start() -> ! {
         directory_display,
         directory_paint,
         directory_terminal,
-    ] = ["shout", "owner", "giver", "display", "paint", "terminal"].map(directory_for);
+        directory_shell,
+    ] = [
+        "shout", "owner", "giver", "display", "paint", "terminal", "shell",
+    ]
+    .map(directory_for);
 
     must(spawn(LOG, [Pass::Move(log), Pass::Move(CONSOLE)]), 7);
     set_log(my_log);
@@ -160,14 +178,14 @@ extern "C" fn _start() -> ! {
             failures += 1;
         }
     }
-    // The picture is on the screen: now the keyboard and the terminal.
+    // The picture is on the screen: now the terminal, keyboard and shell.
     must(
         spawn(
             TERMINAL,
             [
                 Pass::Move(log_terminal),
                 Pass::Move(directory_terminal),
-                Pass::Move(keys),
+                Pass::Move(terminal),
             ],
         ),
         20,
@@ -179,10 +197,33 @@ extern "C" fn _start() -> ! {
                 Pass::Move(log_keyboard),
                 Pass::Move(KEYBOARD_PORTS),
                 Pass::Move(KEYBOARD_INTERRUPT),
-                Pass::Move(keys_for_keyboard),
+                Pass::Move(terminal_for_keyboard),
             ],
         ),
         21,
+    );
+    let mut names = must(Memory::new(1), 22);
+    let mut at = 0;
+    for (name, _) in SHELL_PROGRAMS {
+        names.bytes_mut()[at..at + name.len()].copy_from_slice(name.as_bytes());
+        names.bytes_mut()[at + name.len()] = b'\n';
+        at += name.len() + 1;
+    }
+    let [hello, intruder, giver, paint] = SHELL_PROGRAMS.map(|(_, program)| Pass::Copy(program));
+    must(
+        spawn(
+            SHELL,
+            [
+                Pass::Move(terminal_for_shell),
+                Pass::Move(directory_shell),
+                Pass::Memory(names),
+                hello,
+                intruder,
+                giver,
+                paint,
+            ],
+        ),
+        23,
     );
     if failures == 0 {
         println!("All {programs} programs ended as they should. The services keep running.");

@@ -1,0 +1,8 @@
+[package]
+name = "shell"
+version = "0.1.0"
+edition = "2024"
+description = "Reads commands from the terminal and starts the programs it holds"
+
+[dependencies]
+userlib = { path = "../../userlib" }

@@ -21,3 +21,4 @@ program!(DISPLAY, "display");
 program!(PAINT, "paint");
 program!(KEYBOARD, "keyboard");
 program!(TERMINAL, "terminal");
+program!(SHELL, "shell");

@@ -57,7 +57,46 @@ pub fn steps() -> Vec<Step> {
             expected: typed(german_line),
             times: 2,
         },
+        // Every line went to the shell, which knows none of them.
+        shown("xz/y1@ö: no such command or program. 'help' lists them."),
+        // The shell (back to the US layout first): what it may start, a
+        // program whose output lands on the terminal, one the kernel stops.
+        Step {
+            keys: names(&["alt-shift"]),
+            expected: "[keyboard] Layout: US (QWERTY).".into(),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("help"),
+            expected: output("Programs I may start: hello, intruder, giver, paint."),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("hello"),
+            expected: output("hello ended: exit code 0."),
+            times: 1,
+        },
+        shown("Got \"a page from the shell\""),
+        Step {
+            keys: keys_for("intruder"),
+            expected: output("intruder was stopped by the kernel: page fault (14)."),
+            times: 1,
+        },
     ]
+}
+
+/// A line the terminal shows (and logs).
+fn output(line: &str) -> String {
+    format!("[terminal] {line}")
+}
+
+/// A step that types nothing, only looks for a line already due.
+fn shown(line: &str) -> Step {
+    Step {
+        keys: Vec::new(),
+        expected: output(line),
+        times: 1,
+    }
 }
 
 fn typed(line: &str) -> String {

@@ -134,6 +134,13 @@ name = "scheduling"
 version = "0.1.0"
 
 [[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
 name = "shout"
 version = "0.1.0"
 dependencies = [

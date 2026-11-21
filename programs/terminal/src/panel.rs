@@ -1,5 +1,6 @@
-//! The strip of lines at the bottom of the screen: the last few finished
-//! lines, dimmed, and below them the one being typed, after a prompt.
+//! The strip of lines at the bottom of the screen: the last lines – typed
+//! ones dimmed, after a dimmed prompt; output bright – and below them the
+//! one being typed, after the prompt.
 //!
 //! The boot test checks the bottom-left pixel of the screen for
 //! `BACKGROUND` – keep it so.
@@ -14,9 +15,10 @@ const TEXT: u32 = 0xC9_CC_D3;
 const OLD_TEXT: u32 = 0x7C_80_8A;
 /// Hematite's streak red, as in paint's picture.
 const PROMPT: u32 = 0x9B_2A_22;
+const OLD_PROMPT: u32 = 0x5A_25_21;
 
-/// Finished lines kept above the one being typed.
-const HISTORY: usize = 3;
+/// Lines shown above the one being typed.
+const HISTORY: usize = 10;
 const PADDING: u32 = 8;
 const PROMPT_TEXT: &str = "> ";
 
@@ -28,7 +30,13 @@ pub struct Panel {
     /// Where the panel starts on the screen.
     top: u32,
     scale: u32,
-    finished: VecDeque<String>,
+    lines: VecDeque<(String, Kind)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Typed,
+    Output,
 }
 
 impl Panel {
@@ -44,21 +52,39 @@ impl Panel {
             height,
             top: screen_height - height,
             scale,
-            finished: VecDeque::new(),
+            lines: VecDeque::new(),
         })
     }
 
     /// How many characters fit behind the prompt (and the cursor after them).
     pub fn characters_per_line(&self) -> usize {
-        let room = self.width.saturating_sub(2 * PADDING) / font::advance(self.scale);
-        (room as usize).saturating_sub(PROMPT_TEXT.len() + 1)
+        (self.columns() as usize).saturating_sub(PROMPT_TEXT.len() + 1)
     }
 
     pub fn finish_line(&mut self, line: &str) {
-        if self.finished.len() == HISTORY {
-            self.finished.pop_front();
+        self.push(String::from(line), Kind::Typed);
+    }
+
+    /// Shows `text` (one line, no newline) as output, wrapped at the edge.
+    pub fn add_output(&mut self, text: &str) {
+        let columns = self.columns().max(1) as usize;
+        let mut rest = text;
+        loop {
+            let cut = rest
+                .char_indices()
+                .nth(columns)
+                .map_or(rest.len(), |(at, _)| at);
+            self.push(String::from(&rest[..cut]), Kind::Output);
+            rest = &rest[cut..];
+            if rest.is_empty() {
+                break;
+            }
         }
-        self.finished.push_back(String::from(line));
+    }
+
+    /// Empties the strip (the shell's `clear`).
+    pub fn clear(&mut self) {
+        self.lines.clear();
     }
 
     /// Draws everything with `line` as the one being typed and the cursor
@@ -72,8 +98,16 @@ impl Panel {
         };
         canvas.fill(0, 0, width, height, BACKGROUND);
         let mut y = PADDING;
-        for old in &self.finished {
-            canvas.text(PADDING, y, old, scale, OLD_TEXT);
+        for (old, kind) in &self.lines {
+            match kind {
+                Kind::Typed => {
+                    let x = canvas.text(PADDING, y, PROMPT_TEXT, scale, OLD_PROMPT);
+                    canvas.text(x, y, old, scale, OLD_TEXT);
+                }
+                Kind::Output => {
+                    canvas.text(PADDING, y, old, scale, TEXT);
+                }
+            }
             y += row_height(scale);
         }
         let x = canvas.text(PADDING, y, PROMPT_TEXT, scale, PROMPT);
@@ -95,6 +129,18 @@ impl Panel {
             height,
         };
         display::draw(self.display, &self.pixels, area)
+    }
+
+    /// Letters that fit across the strip.
+    fn columns(&self) -> u32 {
+        self.width.saturating_sub(2 * PADDING) / font::advance(self.scale)
+    }
+
+    fn push(&mut self, line: String, kind: Kind) {
+        if self.lines.len() == HISTORY {
+            self.lines.pop_front();
+        }
+        self.lines.push_back((line, kind));
     }
 }
 

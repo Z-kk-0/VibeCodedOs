@@ -16,7 +16,7 @@ use boot_info::{Framebuffer, PixelFormat};
 use paging::Caching;
 
 /// In the order `init` expects them, after the console (handle 0).
-const PROGRAMS: [(&str, &[u8]); 12] = [
+const PROGRAMS: [(&str, &[u8]); 13] = [
     ("log", programs::LOG),
     ("dir", programs::DIRECTORY),
     ("shout", programs::SHOUT),
@@ -29,9 +29,10 @@ const PROGRAMS: [(&str, &[u8]); 12] = [
     ("paint", programs::PAINT),
     ("keyboard", programs::KEYBOARD),
     ("terminal", programs::TERMINAL),
+    ("shell", programs::SHELL),
 ];
 /// Services that keep running once init is done.
-const SERVICES: usize = 6; // log, dir, shout, display, keyboard, terminal
+const SERVICES: usize = 7; // log, dir, shout, display, keyboard, terminal, shell
 
 /// The PC keyboard controller (i8042): its interrupt and its data (0x60)
 /// and status/command (0x64) ports.

@@ -24,7 +24,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
 | `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot tests (4 cores, and 80 cores with x2APIC), crash tests. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
-| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types on the emulated keyboard (QEMU monitor `sendkey`, steps in `xtask/src/keyboard.rs`: US and German layout, arrows, AltGr, history; the terminal must log each line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
+| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types on the emulated keyboard (QEMU monitor `sendkey`, steps in `xtask/src/keyboard.rs`: US and German layout, arrows, AltGr, history, then shell commands; the terminal must log each line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
 | `cargo xtask symbolize <address>...` | Names the kernel function each hex address lies in (debug build). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
@@ -56,6 +56,8 @@ the edges, code and docs in English.
   `Program` handle for it), and its start in `programs/init` with the handles it gets (document
   them at the top of its `main.rs`). The device handles (screen, keyboard ports, keyboard
   interrupt) come right after the programs, so their numbers in `programs/init` move up by one.
+  To make it startable from the shell, add it to `SHELL_PROGRAMS` in `programs/init` and, if it
+  needs more than an output handle, to `start` in `programs/shell/src/programs.rs`.
 - New boot-time behaviour → make sure the boot test still reaches `Hematite kernel ready.`;
   if it can fail silently, print something the boot test can check.
 

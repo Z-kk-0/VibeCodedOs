@@ -52,16 +52,16 @@ UEFI firmware (OVMF in QEMU)
               │  stacks must have sent TLB shootdowns                     task/checks.rs
               ├─ device interrupts: ACPI MADT → I/O APICs, every line     kernel/src/arch/io_apic.rs
               │  masked; only IRQ 1 (keyboard) routed, to core 1
-              ├─ ipc::check: starts only `init` (console, 12 Program     kernel/src/ipc/checks.rs
+              ├─ ipc::check: starts only `init` (console, 13 Program     kernel/src/ipc/checks.rs
               │  handles, the screen as a Device, the keyboard's ports
               │  and interrupt), waits for its exit                      programs/init
               │    init: endpoints, badged sending ends, starts log,
               │    dir, vandal, hello, owner, giver, shout, intruder,
               │    display (gets the screen), paint (draws through it);
-              │    checks how each test program ended; then terminal and
-              │    keyboard (gets the keyboard's handles) → exit 0 / n
-              │  afterwards: log, dir, shout, display, keyboard and
-              │  terminal keep running
+              │    checks how each test program ended; then terminal,
+              │    keyboard (gets the keyboard's handles) and shell → exit 0 / n
+              │  afterwards: log, dir, shout, display, keyboard, terminal
+              │  and shell keep running
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ the boot task ends: from now on only idle tasks (hlt) run
                  in the kernel, everything else is user programs
@@ -137,9 +137,13 @@ interrupt *is* the reply. Port I/O goes through a `Ports` handle (`ipc/ports.rs`
 the `in`/`out` for the ports asked for, up to four per call. `keyboard` holds both for the keyboard controller and
 calls `terminal` with each key (`userlib::keyboard`).
 
+The shell (DECISIONS 026) reads lines from the terminal (`userlib::terminal`) and starts the
+programs init gave it a handle for, each with a copy of the terminal as handle 0: the terminal
+speaks the log's protocol, so their `println!` lands on the screen.
+
 | Program | Kind | Handles it starts with | What it proves |
 |---|---|---|---|
-| `init` | first program | 0 console, 1–12 programs, 13 screen, 14 keyboard ports, 15 keyboard interrupt | user space wires itself up |
+| `init` | first program | 0 console, 1–13 programs, 14 screen, 15 keyboard ports, 16 keyboard interrupt | user space wires itself up |
 | `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
 | `dir` (`directory`) | service | 0 log, 1 directory endpoint (receive) | names; parked lookups (reply handles) |
 | `shout` | service | 0 log, 1 directory (registers itself) | `&mut` borrow and move work |
@@ -151,7 +155,8 @@ calls `terminal` with each key (`userlib::keyboard`).
 | `display` | driver, service | 0 log, 1 directory, 2 screen (device) | a driver in user space; device memory, write-combining |
 | `paint` | program | 0 log, 1 directory | drawing through `display` with lent memory (the boot test's screenshot checks it) |
 | `keyboard` | driver | 0 log, 1 ports 0x60/0x64, 2 IRQ 1, 3 keys (sending end to `terminal`) | interrupts as replies; port I/O through a handle |
-| `terminal` | program, service | 0 log, 1 directory, 2 keys (receive) | typing shows up on the screen; line editing, history (the boot test types) |
+| `terminal` | service | 0 log, 1 directory, 2 terminal endpoint (receive) | typing shows up on the screen; line editing, history; output and lines for the shell |
+| `shell` | program | 0 terminal, 1 directory, 2 program names, 3… programs (hello, intruder, giver, paint) | a capability shell: it can start only what it holds; programs' output goes where their handle 0 points |
 
 ## Crates
 
@@ -169,7 +174,7 @@ calls `terminal` with each key (`userlib::keyboard`).
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs, I/O APIC redirection entries, the page attribute table). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
 | `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges, device info (pixel formats), port operations. |
-| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, interrupts and ports, the directory, display and keyboard protocols, a 5×7 font, a heap (`alloc`), `println!`, panic handler. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, interrupts and ports, the directory, display, keyboard and terminal protocols, a 5×7 font, a heap (`alloc`), `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`; types on the emulated keyboard and checks QEMU screenshots. |
 
@@ -204,6 +209,8 @@ Done:
       boot task ends after boot (DECISIONS 024)
 - [x] Keyboard: I/O APIC routing, interrupts delivered as IPC replies, I/O ports as a handle;
       `keyboard` driver and `terminal` in user space (DECISIONS 025)
+- [x] Shell: reads commands from the terminal, starts only the programs it holds, shows their
+      output and how they ended (DECISIONS 026)
 
 Next: decided together with the owner – candidates are the open `design` and `idea` issues.
 
@@ -228,6 +235,8 @@ known limits below, `idea` for things worth considering.
   request at a time and copies whole areas (no double buffering).
 - Device interrupts (DECISIONS 025): only the 16 ISA IRQs (more needs PCI); the level-triggered
   path is untested in QEMU. Keyboard: US and German layouts, no dead keys.
+- Shell (DECISIONS 026): one program at a time, no background jobs, no way to stop a running one;
+  programs get handles, not a command line.
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

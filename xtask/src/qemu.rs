@@ -105,7 +105,9 @@ fn type_on_the_keyboard(qemu: &mut Child, log_path: &Path) -> Result {
             ));
         }
     }
-    println!("Typed on the keyboard - arrows, layouts, AltGr, history: the terminal got it all.");
+    println!(
+        "Typed on the keyboard - arrows, layouts, AltGr, history, shell commands: all arrived."
+    );
     Ok(())
 }
 

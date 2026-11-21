@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["abi", "acpi", "boot_info", "capability", "elf", "frame_table", "heap", "kernel", "loader", "paging", "programs/directory", "programs/display", "programs/giver", "programs/hello", "programs/init", "programs/intruder", "programs/keyboard", "programs/log", "programs/owner", "programs/paint", "programs/shout", "programs/terminal", "programs/vandal", "scheduling", "userlib", "x86", "xtask"]
+members = ["abi", "acpi", "boot_info", "capability", "elf", "frame_table", "heap", "kernel", "loader", "paging", "programs/directory", "programs/display", "programs/giver", "programs/hello", "programs/init", "programs/intruder", "programs/keyboard", "programs/log", "programs/owner", "programs/paint", "programs/shell", "programs/shout", "programs/terminal", "programs/vandal", "scheduling", "userlib", "x86", "xtask"]
 # Plain `cargo test` / `cargo clippy` only touch the crates that build for
 # the host. Kernel and loader always need an explicit `--target`
 # (`cargo xtask` handles that).

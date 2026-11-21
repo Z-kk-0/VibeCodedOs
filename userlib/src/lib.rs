@@ -30,6 +30,7 @@ pub mod ports;
 pub mod print;
 mod program;
 mod system_call;
+pub mod terminal;
 
 pub use endpoint::{endpoint_new, mint, revoke};
 pub use ipc::{
