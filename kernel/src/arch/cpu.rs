@@ -20,6 +20,15 @@ pub unsafe fn enable_interrupts() {
     unsafe { asm!("sti", options(nomem, nostack)) };
 }
 
+/// Whether interrupts are on right now (RFLAGS.IF).
+pub fn interrupts_enabled() -> bool {
+    const INTERRUPT_FLAG: u64 = 1 << 9; // Intel SDM Vol. 1, §3.4.3
+    let flags: u64;
+    // SAFETY: only reads RFLAGS via the stack.
+    unsafe { asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)) };
+    flags & INTERRUPT_FLAG != 0
+}
+
 /// Turns interrupts off and reports whether they were on before, so the
 /// caller can restore the previous state with `enable_interrupts`.
 pub fn disable_interrupts() -> bool {

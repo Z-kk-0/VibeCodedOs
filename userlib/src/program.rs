@@ -19,6 +19,9 @@ pub enum Ended {
     Exited(u64),
     /// Stopped by the kernel after this CPU exception (14 = page fault).
     Killed(u64),
+    /// The kernel failed while working for it and ended only it (a kernel
+    /// bug, contained): the CPU exception, or `abi::KERNEL_PANIC`.
+    KernelFailed(u64),
 }
 
 /// Starts the program behind `program`, with exactly `handles` as its
@@ -51,6 +54,7 @@ pub fn wait(child: Handle) -> Result<Ended, Error> {
     let reply = call(child, Attach::Nothing, [0; 4])?;
     Ok(match reply.words[0] {
         abi::CHILD_EXITED => Ended::Exited(reply.words[1]),
+        abi::CHILD_KERNEL_FAILED => Ended::KernelFailed(reply.words[1]),
         _ => Ended::Killed(reply.words[1]),
     })
 }

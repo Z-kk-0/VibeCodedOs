@@ -1,4 +1,5 @@
-//! Boot-time proof that multitasking and multi-core work.
+//! Boot-time proof that multitasking and multi-core work – and that a
+//! kernel bug in a task holding no lock ends only that task.
 
 use super::{Exit, core_count, sleep, spawn, task_count, wait};
 use crate::sync::SpinLock;
@@ -6,6 +7,7 @@ use crate::{arch, time};
 use alloc::string::String;
 use alloc::vec::Vec;
 use scheduling::cores::AtomicCoreSet;
+use x86::exceptions::PAGE_FAULT;
 
 static LOG: SpinLock<Vec<u8>> = SpinLock::new(Vec::new());
 /// One bit per core a busy task ran on.
@@ -36,6 +38,7 @@ pub fn check() {
     for task in busy.into_iter().chain([sleeper]) {
         assert_eq!(wait(task), Exit::Code(0));
     }
+    kernel_bugs_are_contained();
     sleep(2); // a few more switches, so the finished tasks get freed
 
     let log = String::from_utf8(LOG.lock().clone()).expect("log is ASCII");
@@ -65,8 +68,23 @@ pub fn check() {
     println!(
         "Scheduler works: busy tasks interleaved on {cores_used} cores, sleeper woke up: {log}"
     );
+    println!("All 7 tasks ended and their stacks were freed ({shootdowns} TLB shootdowns so far).");
+}
+
+/// Two kernel tasks with a bug each, holding no lock: one faults, one
+/// panics. Each must end alone, and the machine must go on (DECISIONS.md,
+/// 024). Their stacks are freed with the others' above.
+fn kernel_bugs_are_contained() {
+    let faulty = spawn("faulty", || {
+        let unmapped = 0x1000 as *const u64;
+        // SAFETY: not safe at all – that's the point. It must page-fault.
+        let _ = unsafe { unmapped.read_volatile() };
+    });
+    let panicky = spawn("panicky", || panic!("on purpose, to show it is contained"));
+    assert_eq!(wait(faulty), Exit::KernelFailed(PAGE_FAULT));
+    assert_eq!(wait(panicky), Exit::KernelFailed(abi::KERNEL_PANIC));
     println!(
-        "All 5 tasks exited and their stacks were freed ({shootdowns} TLB shootdowns so far)."
+        "Kernel bugs in tasks holding no lock were contained: both tasks ended, nothing else."
     );
 }
 

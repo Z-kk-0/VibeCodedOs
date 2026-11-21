@@ -4,6 +4,8 @@
 pub const NON_MASKABLE_INTERRUPT: u64 = 2;
 pub const BREAKPOINT: u64 = 3;
 pub const DOUBLE_FAULT: u64 = 8;
+/// The CPU found a hardware error (SDM Vol. 3B, chapter 16).
+pub const MACHINE_CHECK: u64 = 18;
 pub const PAGE_FAULT: u64 = 14;
 /// Vectors 0–31 are reserved for CPU exceptions; 32–255 are free.
 pub const FIRST_NON_EXCEPTION: u64 = 32;

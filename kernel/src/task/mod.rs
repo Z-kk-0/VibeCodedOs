@@ -9,12 +9,14 @@
 mod checks;
 mod context;
 mod exits;
+mod faults;
 mod program;
 mod switch;
 
 pub use checks::check;
 pub use context::TaskContext;
 pub use exits::{Exit, exit_of, forget_exit, wait};
+pub use faults::{Verdict, judge as judge_failure};
 pub use program::{grow_stack, load_program, spawn_program};
 pub use switch::{switch, switch_on_tick};
 
@@ -32,7 +34,8 @@ static SCHEDULER: SpinLock<Option<RunQueue<TaskContext>>> = SpinLock::new(None);
 /// Makes the code running now task 0 ("boot") and creates core 0's idle
 /// task. From now on, every timer tick may switch tasks. Needs the heap.
 pub fn init() {
-    let idle = TaskContext::new_kernel("idle", idle_entry, 0);
+    let mut idle = TaskContext::new_kernel("idle", idle_entry, 0);
+    idle.essential = true;
     *SCHEDULER.lock() = Some(RunQueue::new(TaskContext::running("boot"), idle));
 }
 
@@ -64,10 +67,14 @@ pub fn sleep(ticks: u64) {
     arch::yield_now();
 }
 
-/// Ends the current kernel task. Its stack is freed at a later switch.
-fn exit() -> ! {
+/// Ends the current task from kernel code running on its own stack (a
+/// kernel task's end, or a contained kernel panic). Like `end_current`:
+/// a program's promises are settled first. Its stack is freed at a later
+/// switch. Must be called with no lock held.
+pub fn exit_current(exit: Exit) -> ! {
     with_scheduler(|scheduler, core| {
-        exits::record(scheduler.current_id(core), Exit::Code(0));
+        crate::ipc::on_exit(scheduler, core, exit);
+        exits::record(scheduler.current_id(core), exit);
         scheduler.set_current_state(core, State::Exited);
     });
     loop {
@@ -82,6 +89,10 @@ pub fn task_count() -> usize {
 /// How many cores take part in scheduling.
 pub fn core_count() -> usize {
     with_scheduler(|scheduler, _| scheduler.core_count())
+}
+
+pub fn current_id() -> TaskId {
+    with_scheduler(|scheduler, core| scheduler.current_id(core))
 }
 
 pub fn current_name() -> &'static str {
@@ -133,7 +144,7 @@ extern "sysv64" fn task_entry(work: u64) -> ! {
     // SAFETY: `spawn` passed exactly this pointer from `Box::into_raw`.
     let work = unsafe { Box::from_raw(work as *mut Box<dyn FnOnce() + Send>) };
     work();
-    exit()
+    exit_current(Exit::Code(0))
 }
 
 extern "sysv64" fn idle_entry(_: u64) -> ! {

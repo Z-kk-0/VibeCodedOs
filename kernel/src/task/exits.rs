@@ -11,6 +11,10 @@ pub enum Exit {
     Code(u64),
     /// The kernel stopped it: the CPU exception it caused (e.g. 14 = page fault).
     Killed(u64),
+    /// The kernel itself failed while running it, holding no lock, and
+    /// ended only this task (DECISIONS.md, 024): the CPU exception, or
+    /// `abi::KERNEL_PANIC`.
+    KernelFailed(u64),
 }
 
 /// How tasks ended, until someone asked (`wait`) or nobody can ask anymore

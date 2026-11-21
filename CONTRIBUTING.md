@@ -24,7 +24,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
 | `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot tests (4 cores, and 80 cores with x2APIC), crash tests. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
-| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot a screenshot (QEMU `screendump` to `build/screen.ppm`; two pixels of `paint`'s picture must be right). `--crash` builds a kernel that page-faults on purpose, `--crash-stack` one that overflows its stack (the guard page must catch it). |
+| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot a screenshot (QEMU `screendump` to `build/screen.ppm`; two pixels of `paint`'s picture must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
 | `cargo xtask symbolize <address>...` | Names the kernel function each hex address lies in (debug build). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
@@ -77,6 +77,9 @@ the edges, code and docs in English.
   `emergency_println!`, which can't deadlock.
 - **Locks switch interrupts off** (`sync::SpinLock`), so a task can't be preempted while holding one
   – keep critical sections short, and never call `sleep` or `exit` while holding a lock.
+  The kernel also relies on it when it fails (DECISIONS 024): a bug where interrupts are on is
+  taken as "no lock held" and only ends that task. So never switch interrupts on while holding a
+  lock, and keep them off in multi-step lock-free code that must not be cut off halfway.
 - **Everything runs on several cores at once** (DECISIONS 019). Shared data needs a lock or atomics;
   "the other task is blocked" is no protection. Never busy-wait for another core with interrupts
   off except inside `SpinLock::lock` – its spin loop answers TLB shootdowns, anything else would

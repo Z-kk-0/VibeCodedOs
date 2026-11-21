@@ -23,6 +23,7 @@ mod time;
 use arch::cpu;
 use boot_info::BootInfo;
 use serial::Serial;
+use task::Exit;
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
     Serial::init_com1();
@@ -84,7 +85,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     if option_env!("HEMATITE_CRASH_TEST").is_some() {
         crash_test();
     }
-    heartbeat()
+    // The boot task's work is done. From here on the kernel runs no task of
+    // its own but the idle tasks (DECISIONS.md, 024): everything else is a
+    // user program. Nobody waits for the boot task, so keep no record.
+    task::forget_exit(task::current_id());
+    task::exit_current(Exit::Code(0))
 }
 
 /// Where every core but the first continues once `arch` set it up: it joins
@@ -98,31 +103,25 @@ fn other_core_main() -> ! {
     }
 }
 
-/// Nothing else to do yet: the boot task sleeps (the idle task halts the
-/// CPU meanwhile) and shows a sign of life now and then.
-fn heartbeat() -> ! {
-    const HEARTBEAT_TICKS: u64 = 10 * time::TICKS_PER_SECOND as u64;
-    loop {
-        task::sleep(HEARTBEAT_TICKS);
-        println!(
-            "Still alive, uptime {} s.",
-            time::uptime_milliseconds() / 1000
-        );
-    }
-}
-
-/// Built in only by `cargo xtask boot-test --crash`: touches the lower half,
-/// which is empty since the identity map is gone, to check that faults get
-/// reported.
+/// Built in only by `cargo xtask boot-test --crash` / `--crash-stack`: kernel
+/// bugs that must stop the machine (DECISIONS.md, 024), and be reported.
 fn crash_test() {
     if option_env!("HEMATITE_CRASH_TEST") == Some("stack-overflow") {
         println!("Crash test: overflowing the boot stack...");
         overflow(0);
     }
-    println!("Crash test: reading unmapped memory...");
-    let unmapped = 0x1000 as *const u64;
-    // SAFETY: not safe at all – that's the point. It must page-fault.
-    let _ = unsafe { unmapped.read_volatile() };
+    // A kernel task that faults *while holding a lock*: that can't be
+    // contained (every other core might wait for the lock forever).
+    static HELD: sync::SpinLock<()> = sync::SpinLock::new(());
+    println!("Crash test: a kernel task reads unmapped memory while holding a lock...");
+    let crasher = task::spawn("crasher", || {
+        let _guard = HELD.lock();
+        let unmapped = 0x1000 as *const u64;
+        // SAFETY: not safe at all – that's the point. It must page-fault.
+        let _ = unsafe { unmapped.read_volatile() };
+    });
+    task::wait(crasher);
+    println!("Crash test failed: the machine is still running.");
 }
 
 /// Calls itself until the stack runs into its guard page.
@@ -132,9 +131,22 @@ fn overflow(depth: u64) -> u64 {
     overflow(depth + 1) + frame[0]
 }
 
+/// A kernel bug. Like a fault: if it provably touched no shared state, only
+/// the task it happened in ends (DECISIONS.md, 024); else the machine stops.
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    let reason = match task::judge_failure(cpu::interrupts_enabled()) {
+        task::Verdict::Contain => {
+            println!("[{}] kernel panic contained: {info}", task::current_name());
+            println!(
+                "  No lock was held: only this task ends. What it had on its stack is leaked."
+            );
+            task::exit_current(Exit::KernelFailed(abi::KERNEL_PANIC))
+        }
+        task::Verdict::Stop(reason) => reason,
+    };
     arch::stop_other_cores();
     emergency_println!("\nKERNEL PANIC: {info}");
+    emergency_println!("  Machine stopped: {reason}.");
     arch::stop_this_core()
 }

@@ -33,8 +33,10 @@ pub struct InterruptFrame {
     pub ss: u64,
 }
 
+/// RFLAGS.IF, Intel SDM Vol. 1, §3.4.3.
+const INTERRUPT_FLAG: u64 = 1 << 9;
 /// RFLAGS with interrupts enabled. Bit 1 is reserved and always set.
-const INTERRUPTS_ON: u64 = 1 << 9 | 1 << 1;
+const INTERRUPTS_ON: u64 = INTERRUPT_FLAG | 1 << 1;
 
 impl InterruptFrame {
     /// A frame that, when "returned to" with `iretq`, starts
@@ -72,5 +74,10 @@ impl InterruptFrame {
     /// Whether the interrupted code was a user program (privilege level 3).
     pub fn came_from_user_mode(&self) -> bool {
         self.cs & 3 == 3
+    }
+
+    /// Whether interrupts were on in the interrupted code (RFLAGS.IF).
+    pub fn interrupts_were_on(&self) -> bool {
+        self.rflags & INTERRUPT_FLAG != 0
     }
 }

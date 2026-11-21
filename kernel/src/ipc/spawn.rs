@@ -152,6 +152,7 @@ pub fn write_exit(frame: &mut InterruptFrame, exit: Exit) {
     (frame.r10, frame.r8) = match exit {
         Exit::Code(code) => (abi::CHILD_EXITED, code),
         Exit::Killed(vector) => (abi::CHILD_KILLED, vector),
+        Exit::KernelFailed(cause) => (abi::CHILD_KERNEL_FAILED, cause),
     };
     (frame.r9, frame.r12) = (0, 0);
 }

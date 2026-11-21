@@ -1,14 +1,16 @@
 //! CPU exceptions (vectors 0–31): the CPU telling us an instruction went
 //! wrong. A breakpoint is harmless. A fault in a user program ends that
 //! program – the kernel carries on. A fault in the kernel itself is a bug:
-//! report everything and stop the machine. Names and error-code meanings
-//! come from the `x86` crate.
+//! if it provably touched no shared state, only its task ends (DECISIONS.md,
+//! 024, `task/faults.rs`); otherwise report everything and stop the
+//! machine. Names and error-code meanings come from the `x86` crate.
 
 use super::InterruptFrame;
 use crate::arch::{self, cpu};
-use crate::task::{self, Exit};
+use crate::task::{self, Exit, Verdict};
 use x86::exceptions::{
-    BREAKPOINT, NON_MASKABLE_INTERRUPT, PAGE_FAULT, describe_page_fault, name, page_was_unmapped,
+    BREAKPOINT, DOUBLE_FAULT, MACHINE_CHECK, NON_MASKABLE_INTERRUPT, PAGE_FAULT,
+    describe_page_fault, name, page_was_unmapped,
 };
 
 /// Returns the frame to resume (another task's, if a program was ended).
@@ -53,8 +55,35 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
         return task::end_current(frame, Exit::Killed(vector));
     }
+    // A kernel bug. Can it be contained to the task it happened in
+    // (DECISIONS.md, 024)? Never after a double fault (the stack is broken)
+    // or a machine check (the hardware is).
+    let verdict = match frame.vector {
+        DOUBLE_FAULT | MACHINE_CHECK => Verdict::Stop("this exception is never survivable"),
+        _ => task::judge_failure(frame.interrupts_were_on()),
+    };
+    let reason = match verdict {
+        Verdict::Contain => {
+            let task = task::current_name();
+            let (exception, rip) = (name(frame.vector), frame.rip);
+            if frame.vector == PAGE_FAULT {
+                let address = cpu::page_fault_address();
+                println!(
+                    "[{task}] kernel bug contained: {exception} at {address:#x} (rip {rip:#x})"
+                );
+            } else {
+                println!("[{task}] kernel bug contained: {exception} at rip {rip:#x}");
+            }
+            println!(
+                "  No lock was held: only this task ends. What it had on its stack is leaked."
+            );
+            return task::end_current(frame, Exit::KernelFailed(frame.vector));
+        }
+        Verdict::Stop(reason) => reason,
+    };
     // Report first: if stopping the others goes wrong too, the reason is out.
     report(frame);
+    emergency_println!("  Machine stopped: {reason}.");
     arch::stop_other_cores();
     arch::stop_this_core();
 }

@@ -29,6 +29,9 @@ pub struct TaskContext {
     /// stub writes to it after the scheduler lock is released, when the
     /// run queue may already have moved this context.
     pub leaving: Box<AtomicBool>,
+    /// The kernel's own tasks – boot and the idle tasks. A kernel bug in
+    /// one of them always stops the machine (DECISIONS.md, 024).
+    pub essential: bool,
     /// Freed together with the task. `None` for the boot task, which keeps
     /// running on the kernel's boot stack.
     _kernel_stack: Option<KernelStack>,
@@ -39,7 +42,8 @@ pub struct TaskContext {
 unsafe impl Send for TaskContext {}
 
 impl TaskContext {
-    /// The code that is running right now.
+    /// The code that is running right now: the boot code, or a started
+    /// core's startup code becoming its idle task. Essential.
     pub fn running(name: &'static str) -> Self {
         Self {
             name,
@@ -47,6 +51,7 @@ impl TaskContext {
             kernel_stack_top: 0,
             process: None,
             leaving: Box::new(AtomicBool::new(false)),
+            essential: true,
             _kernel_stack: None,
         }
     }
@@ -112,6 +117,7 @@ impl TaskContext {
             kernel_stack_top: top,
             process,
             leaving: Box::new(AtomicBool::new(false)),
+            essential: false,
             _kernel_stack: Some(stack),
         }
     }

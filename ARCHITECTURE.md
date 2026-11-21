@@ -47,8 +47,9 @@ UEFI firmware (OVMF in QEMU)
               │    → other_core_main: joins scheduler, timer on, idles   kernel/src/main.rs
               ├─ "N cores online."          ← the boot test checks N
               ├─ task::check: 4 busy tasks + 1 sleeper must interleave,
-              │  on more than one core; freeing their stacks must have
-              │  sent TLB shootdowns                                     task/checks.rs
+              │  on more than one core; a faulting and a panicking task
+              │  must end alone (contained kernel bugs); freeing their
+              │  stacks must have sent TLB shootdowns                     task/checks.rs
               ├─ ipc::check: starts only `init` (console, 10 Program     kernel/src/ipc/checks.rs
               │  handles, the screen as a Device), waits for its exit    programs/init
               │    init: endpoints, badged sending ends, starts log,
@@ -57,7 +58,8 @@ UEFI firmware (OVMF in QEMU)
               │    checks how each test program ended → exit 0 / n
               │  afterwards: log, dir, shout, display keep running
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
-              └─ heartbeat: boot task sleeps 10 s at a time; idle tasks run hlt
+              └─ the boot task ends: from now on only idle tasks (hlt) run
+                 in the kernel, everything else is user programs
 ```
 
 Physical memory the loader reserves for starting cores (`MemoryKind::CoreStartup`, never freed):
@@ -182,6 +184,8 @@ Done:
 - [x] Screen: framebuffer from UEFI GOP, caching per mapping (PAT, write-combining), device
       memory as capabilities, `display` – the first driver in user space – and `paint`
       (DECISIONS 023)
+- [x] Robustness: kernel bugs that provably touched no shared state end only their task, the
+      boot task ends after boot (DECISIONS 024)
 
 Next: decided together with the owner – candidates are the open `design` and `idea` issues.
 
@@ -195,8 +199,9 @@ known limits below, `idea` for things worth considering.
   ticks skip it when it's taken, so it scales to dozens of cores, but every voluntary switch
   waits for it); no CPU affinity. One shootdown request at a time (each covers a whole range).
 - Heap addresses are never reused (on purpose, like memory objects; empty page tables are freed).
-- Tasks: no priorities. Tasks block only for sleeping and IPC. An exception in a *kernel* task
-  still stops the whole machine (in user programs it only ends the program).
+- Tasks: no priorities. Tasks block only for sleeping and IPC.
+- Kernel bugs (DECISIONS 024): contained to their task only where interrupts were on (no lock
+  held); a contained task leaks what its kernel stack owned. Anything else stops the machine.
 - Programs: one task per program, embedded in the kernel (no file system).
 - IPC (DECISIONS 020–022): memory objects ≤ 256 MiB; directory names are first come, first served.
 - Upper-half top-level page table entries must all exist before the first program starts

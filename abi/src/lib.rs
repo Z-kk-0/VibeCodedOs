@@ -95,6 +95,12 @@ pub const SPAWN_ENTRY_SIZE: u64 = 16;
 /// word 1 is the exit code or the CPU exception that stopped it.
 pub const CHILD_EXITED: u64 = 0;
 pub const CHILD_KILLED: u64 = 1;
+/// The kernel failed while working for the child – a kernel bug it could
+/// contain by ending only that program (DECISIONS.md, 024). Word 1 is the
+/// CPU exception, or `KERNEL_PANIC`.
+pub const CHILD_KERNEL_FAILED: u64 = 2;
+/// Not a CPU exception (those are 0–31): the kernel panicked.
+pub const KERNEL_PANIC: u64 = 256;
 
 /// `call(device)` opens device memory (DECISIONS.md, 023): the handle becomes
 /// an owned `Memory` object, mapped with the caching the device needs (the
