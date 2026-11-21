@@ -1,7 +1,7 @@
-//! Starting a program and saying how it ended.
+//! Starting a program, and saying how it ended.
 
 use alloc::string::String;
-use userlib::{Ended, Error, Handle, Memory, Pass, abi, println, spawn, wait};
+use userlib::{Ended, Error, Handle, Memory, Pass, abi, spawn};
 
 const TERMINAL: Handle = Handle(0);
 const DIRECTORY: Handle = Handle(1);
@@ -14,42 +14,49 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn start_and_wait(&self) {
-        let ended = self.start().and_then(wait);
-        match ended {
-            Ok(Ended::Exited(0)) => println!("{} ended: exit code 0.", self.name),
-            Ok(Ended::Exited(code)) => println!("{} ended: exit code {code}.", self.name),
-            Ok(Ended::Killed(exception)) => println!(
-                "{} was stopped by the kernel: {} ({exception}).",
-                self.name,
-                exception_name(exception)
-            ),
-            Ok(Ended::KernelFailed(cause)) => println!(
-                "{}: the kernel failed while working for it ({}); only it ended.",
-                self.name,
-                if cause == abi::KERNEL_PANIC {
-                    "a panic"
-                } else {
-                    exception_name(cause)
-                }
-            ),
-            Err(error) => println!("{}: cannot start it: {error:?}", self.name),
-        }
+    /// Whether it takes arguments (a page with the rest of the line).
+    pub fn takes_arguments(&self) -> bool {
+        self.name == "count"
     }
 
     /// Starts it with the handles this program needs: always our terminal
     /// as its handle 0, then what it works with.
-    fn start(&self) -> Result<Handle, Error> {
+    pub fn start(&self, arguments: &str) -> Result<Handle, Error> {
         let output = Pass::Copy(TERMINAL);
         match self.name.as_str() {
-            "hello" => {
-                let mut greeting = Memory::new(1)?;
-                greeting.bytes_mut()[..GREETING.len()].copy_from_slice(GREETING.as_bytes());
-                spawn(self.handle, [output, Pass::Memory(greeting)])
-            }
+            "hello" => spawn(self.handle, [output, Pass::Memory(page(GREETING)?)]),
+            "count" => spawn(self.handle, [output, Pass::Memory(page(arguments)?)]),
             "paint" | "giver" => spawn(self.handle, [output, Pass::Copy(DIRECTORY)]),
             _ => spawn(self.handle, [output]),
         }
+    }
+}
+
+/// A page with `text` in it (zeros after it).
+fn page(text: &str) -> Result<Memory, Error> {
+    let mut page = Memory::new(1)?;
+    let length = text.len().min(page.len() - 1);
+    page.bytes_mut()[..length].copy_from_slice(&text.as_bytes()[..length]);
+    Ok(page)
+}
+
+/// How a program ended, as a sentence after its name.
+pub fn describe(ended: Ended) -> String {
+    match ended {
+        Ended::Exited(code) => alloc::format!("ended: exit code {code}."),
+        Ended::Killed(exception) => alloc::format!(
+            "was stopped by the kernel: {} ({exception}).",
+            exception_name(exception)
+        ),
+        Ended::KernelFailed(cause) => alloc::format!(
+            "- the kernel failed while working for it ({}); only it ended.",
+            if cause == abi::KERNEL_PANIC {
+                "a panic"
+            } else {
+                exception_name(cause)
+            }
+        ),
+        Ended::Stopped => String::from("was stopped."),
     }
 }
 

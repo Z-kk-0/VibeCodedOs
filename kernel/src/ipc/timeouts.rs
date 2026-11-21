@@ -1,9 +1,9 @@
 //! Giving up on waiting (DECISIONS.md, 021). A timeout covers only the time
 //! in an endpoint's queue – a caller whose message no server took yet, a
-//! server no message came to – and waiting for a device interrupt (025).
-//! Once a server took a call, the caller waits for the reply or for the
-//! reply handle's loss – cutting that short would mean tearing lent memory
-//! out of a server in the middle of its work.
+//! server no message came to – and waiting for a device interrupt (025)
+//! or a child (026). Once a server took a call, the caller waits for the
+//! reply or for the reply handle's loss – cutting that short would mean
+//! tearing lent memory out of a server in the middle of its work.
 
 use super::delivery::fail_call;
 use super::interrupt;
@@ -53,6 +53,10 @@ pub fn expire_timeouts(tasks: &mut Tasks, now: u64) {
                 | Waiting::ForInterrupt {
                     deadline: Some(deadline),
                     ..
+                }
+                | Waiting::ForChild {
+                    deadline: Some(deadline),
+                    ..
                 },
             ) => *deadline,
             _ => continue,
@@ -75,6 +79,8 @@ pub fn expire_timeouts(tasks: &mut Tasks, now: u64) {
                 interrupt::stop_waiting(*irq, id);
                 true
             }
+            // The same for a child: its end wakes the waiter under this lock.
+            Some(Waiting::ForChild { .. }) => true,
             _ => unreachable!("matched above"),
         };
         if was_waiting {

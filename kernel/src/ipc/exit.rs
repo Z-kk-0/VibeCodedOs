@@ -12,6 +12,7 @@ use super::delivery::{fail_reply, release_receiving_end, saved_frame};
 use super::object::Capability;
 use super::process::Waiting;
 use super::spawn::write_exit;
+use super::stop;
 use super::transfer::process;
 use crate::task::{Exit, Tasks};
 use scheduling::{CoreId, State};
@@ -21,6 +22,7 @@ pub fn on_exit(tasks: &mut Tasks, core: CoreId, exit: Exit) {
     let Ok(dying) = process(tasks, me) else {
         return; // a kernel task
     };
+    stop::ended(dying.stop_requested);
     let promises = dying.handles.extract(|capability| {
         matches!(capability, Capability::Reply(_)) || capability.is_receiving_end()
     });
@@ -33,7 +35,7 @@ pub fn on_exit(tasks: &mut Tasks, core: CoreId, exit: Exit) {
     }
     for waiter in tasks.ids() {
         let waits_for_me = process(tasks, waiter).is_ok_and(
-            |waiter| matches!(waiter.waiting, Some(Waiting::ForChild(child)) if child == me),
+            |waiter| matches!(waiter.waiting, Some(Waiting::ForChild { child, .. }) if child == me),
         );
         if waits_for_me {
             process(tasks, waiter).expect("checked").waiting = None;

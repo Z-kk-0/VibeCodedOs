@@ -24,7 +24,7 @@ How it works: [ARCHITECTURE.md](ARCHITECTURE.md). Why: [DECISIONS.md](DECISIONS.
 | `cargo xtask run` | Build and boot in a QEMU window; kernel log appears in your terminal. |
 | `cargo xtask test` | **Every check** – formatting, clippy, unit tests, boot tests (4 cores, and 80 cores with x2APIC), crash tests. Must be green before a commit. |
 | `cargo xtask test --quick` | Same without QEMU (seconds). |
-| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types on the emulated keyboard (QEMU monitor `sendkey`, steps in `xtask/src/keyboard.rs`: US and German layout, arrows, AltGr, history, then shell commands; the terminal must log each line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
+| `cargo xtask boot-test [--crash] [--crash-stack]` | Headless boot, checks the serial log – and after a normal boot types on the emulated keyboard (QEMU monitor `sendkey`, steps in `xtask/src/keyboard.rs`: US and German layout, arrows, AltGr, history, then shell commands – arguments, a background job, `stop`, Ctrl+C; the terminal must log each line) and takes a screenshot (QEMU `screendump` to `build/screen.ppm`; pixels of `paint`'s picture and of the terminal strip must be right). `--crash` builds a kernel in which a task page-faults while holding a lock, `--crash-stack` one that overflows its stack (the guard page must catch it) – kernel bugs that must stop the machine (DECISIONS 024). |
 | `cargo xtask symbolize <address>...` | Names the kernel function each hex address lies in (debug build). |
 | `cargo xtask build [--release]` | Only build; boot folder ends up in `build/esp`. |
 | `cargo test` | Unit tests of the host-testable crates only. |
@@ -63,6 +63,9 @@ the edges, code and docs in English.
 
 ## Gotchas
 
+- **Pixel code is optimized even in debug builds** (workspace `Cargo.toml`, `profile.dev.package`):
+  unoptimized, a full redraw of the terminal took ~110 ms. A new program that draws a lot belongs
+  in that list.
 - **Kernel output must be ASCII.** The serial log is shown by various terminals; non-ASCII gets mangled.
 - **The loader embeds the kernel at compile time** (`include_bytes!` via `HEMATITE_KERNEL_ELF`).
   Always build through `cargo xtask`, which builds the kernel first.

@@ -2,13 +2,14 @@
 //! task's frame, pick the next task for this core, prepare the core for it.
 
 use super::context::TaskContext;
+use super::exits::{self, Exit};
 use super::{SCHEDULER, Tasks};
 use crate::arch::{self, InterruptFrame, cpu};
 use crate::memory::AddressSpace;
 use crate::sync::SpinLockGuard;
 use crate::time;
 use core::sync::atomic::Ordering;
-use scheduling::CoreId;
+use scheduling::{CoreId, State};
 
 /// Called by the yield interrupt and every voluntary switch (sleep, exit,
 /// IPC) with the interrupted task's frame. Returns the frame of the task
@@ -63,6 +64,16 @@ fn switch_with(
     let leaving = unsafe { &*leaving };
     leaving.store(true, Ordering::Relaxed); // published by the lock's release
     arch::release_after_switch(leaving);
+    // A program its parent asked to stop ends instead of running on
+    // (DECISIONS.md, 026). It never ran here, so no core is on its stack.
+    while crate::ipc::must_stop(scheduler, core) && resumes_in_user_mode(scheduler.current(core)) {
+        crate::ipc::on_exit(scheduler, core, Exit::Stopped);
+        let stopped = scheduler.current_id(core);
+        exits::record(stopped, Exit::Stopped);
+        scheduler.set_current_state(core, State::Exited);
+        let switched = scheduler.switch(core, time::ticks(), TaskContext::is_off_every_core);
+        assert!(switched, "an ended task leaves its core");
+    }
 
     let next = scheduler.current(core);
     // SAFETY: the run queue doesn't change while we hold the lock, so the
@@ -98,4 +109,12 @@ unsafe fn activate(next: &TaskContext, previous_space: Option<&AddressSpace>, co
             }
         }
     }
+}
+
+/// Whether `task`, picked to run, would continue in user mode – not in the
+/// middle of kernel work (a program being loaded, say).
+fn resumes_in_user_mode(task: &TaskContext) -> bool {
+    // SAFETY: a picked task's saved frame lies on its own kernel stack,
+    // and nothing runs it while we hold the scheduler lock.
+    !task.saved_frame.is_null() && unsafe { &*task.saved_frame }.came_from_user_mode()
 }

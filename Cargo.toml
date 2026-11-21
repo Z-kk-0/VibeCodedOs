@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["abi", "acpi", "boot_info", "capability", "elf", "frame_table", "heap", "kernel", "loader", "paging", "programs/directory", "programs/display", "programs/giver", "programs/hello", "programs/init", "programs/intruder", "programs/keyboard", "programs/log", "programs/owner", "programs/paint", "programs/shell", "programs/shout", "programs/terminal", "programs/vandal", "scheduling", "userlib", "x86", "xtask"]
+members = ["abi", "acpi", "boot_info", "capability", "elf", "frame_table", "heap", "kernel", "loader", "paging", "programs/count", "programs/directory", "programs/display", "programs/giver", "programs/hello", "programs/init", "programs/intruder", "programs/keyboard", "programs/log", "programs/owner", "programs/paint", "programs/shell", "programs/shout", "programs/terminal", "programs/vandal", "scheduling", "userlib", "x86", "xtask"]
 # Plain `cargo test` / `cargo clippy` only touch the crates that build for
 # the host. Kernel and loader always need an explicit `--target`
 # (`cargo xtask` handles that).
@@ -12,3 +12,18 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+# The programs that push pixels are optimized even in debug builds: an
+# unoptimized pixel loop made every key press take ~110 ms to show
+# (DECISIONS.md, 026). Everything else stays easy to debug.
+[profile.dev.package.userlib]
+opt-level = 2
+
+[profile.dev.package.display]
+opt-level = 2
+
+[profile.dev.package.terminal]
+opt-level = 2
+
+[profile.dev.package.paint]
+opt-level = 2

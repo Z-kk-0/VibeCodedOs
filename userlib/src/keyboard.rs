@@ -9,6 +9,9 @@
 pub const KEY: u64 = 1;
 pub const EDIT: u64 = 2;
 pub const BACKSPACE: char = '\u{8}';
+/// Ctrl+C: "stop what is running". Ctrl with a letter types the old ASCII
+/// control character (Ctrl+A = 1, …, Ctrl+Z = 26).
+pub const CONTROL_C: char = '\u{3}';
 
 /// Keys that type nothing but edit a line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

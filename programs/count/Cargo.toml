@@ -1,0 +1,8 @@
+[package]
+name = "count"
+version = "0.1.0"
+edition = "2024"
+description = "Counts slowly - something to run in the background and to stop"
+
+[dependencies]
+userlib = { path = "../../userlib" }

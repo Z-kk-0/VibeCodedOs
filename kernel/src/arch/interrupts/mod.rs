@@ -45,7 +45,21 @@ struct Resume {
 }
 
 extern "sysv64" fn interrupt_dispatch(frame: &mut InterruptFrame) -> Resume {
-    let frame = dispatch(frame);
+    let interrupted: *mut InterruptFrame = frame;
+    let mut frame = dispatch(frame);
+    // A program its parent asked to stop ends here, on its way back to
+    // user mode – never in the middle of kernel work (DECISIONS.md, 026).
+    // Only if this interrupt switched no task: a second switch would lose
+    // the first one's "still leaving" flag. A task just switched to is
+    // caught at its next interrupt – a timer tick at the latest.
+    if frame == interrupted
+        && crate::ipc::stop_pending()
+        // SAFETY: the frame this interrupt came with, on this task's stack.
+        && unsafe { &*frame }.came_from_user_mode()
+        && crate::task::with_tasks(crate::ipc::must_stop)
+    {
+        frame = crate::task::end_current(frame, crate::task::Exit::Stopped);
+    }
     Resume {
         frame,
         release: take_release_flag(),

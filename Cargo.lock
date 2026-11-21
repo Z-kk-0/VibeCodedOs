@@ -19,6 +19,13 @@ name = "capability"
 version = "0.1.0"
 
 [[package]]
+name = "count"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
 name = "directory"
 version = "0.1.0"
 dependencies = [

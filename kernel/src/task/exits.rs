@@ -15,6 +15,8 @@ pub enum Exit {
     /// ended only this task (DECISIONS.md, 024): the CPU exception, or
     /// `abi::KERNEL_PANIC`.
     KernelFailed(u64),
+    /// Its parent asked the kernel to stop it (DECISIONS.md, 026).
+    Stopped,
 }
 
 /// How tasks ended, until someone asked (`wait`) or nobody can ask anymore

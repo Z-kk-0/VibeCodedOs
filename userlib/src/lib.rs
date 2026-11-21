@@ -39,7 +39,7 @@ pub use ipc::{
 pub use memory::{Borrowed, Memory, ReceivedMemory};
 pub use message::{Received, Reply};
 pub use print::set_log;
-pub use program::{Ended, Pass, spawn, wait};
+pub use program::{Ended, Pass, poll, spawn, stop, wait, wait_timeout};
 
 /// The system call numbers and error codes, for programs that need them.
 pub use abi;

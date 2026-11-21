@@ -20,7 +20,7 @@ use super::message::{Attachment, Message, Mode, write_error, write_handle};
 use super::object::{Capability, ProgramCapability};
 use super::process::Waiting;
 use super::transfer::{self, Phase, give_to_child, process};
-use super::{Next, fail_now};
+use super::{Next, fail_now, stop, timeouts};
 use crate::arch::InterruptFrame;
 use crate::task::{self, Exit, TaskContext, Tasks};
 use alloc::vec::Vec;
@@ -131,19 +131,38 @@ fn parse(bytes: &[u8]) -> Result<Vec<Attachment>, u64> {
         .collect()
 }
 
-/// `call(child)`: answers at once if the child has ended, else waits.
-pub fn wait_for(
+/// `call(child, [op, ..])`: wait for it, ask whether it ended, or stop it
+/// (`abi::CHILD_WAIT`).
+pub fn child_call(
     tasks: &mut Tasks,
     core: CoreId,
     child: TaskId,
+    message: &Message,
     frame: &mut InterruptFrame,
 ) -> Next {
-    if let Some(exit) = task::exit_of(child) {
-        write_exit(frame, exit);
-        return Next::Continue;
+    if message.attachment.is_some() {
+        return fail_now(frame, abi::ERROR_WRONG_KIND);
     }
-    block(tasks, core, frame, Some(Waiting::ForChild(child)));
-    Next::Block
+    match message.words[0] {
+        abi::CHILD_STOP => {
+            stop::request(tasks, child);
+            fail_now(frame, 0)
+        }
+        abi::CHILD_POLL | abi::CHILD_WAIT if task::exit_of(child).is_some() => {
+            write_exit(frame, task::exit_of(child).expect("checked"));
+            Next::Continue
+        }
+        abi::CHILD_POLL => fail_now(frame, abi::ERROR_TIMED_OUT),
+        abi::CHILD_WAIT => {
+            let waiting = Waiting::ForChild {
+                child,
+                deadline: timeouts::deadline(frame.rcx),
+            };
+            block(tasks, core, frame, Some(waiting));
+            Next::Block
+        }
+        _ => fail_now(frame, abi::ERROR_BAD_ARGUMENT),
+    }
 }
 
 /// The reply to `call(child)`: word 0 how it ended, word 1 code or exception.
@@ -153,6 +172,7 @@ pub fn write_exit(frame: &mut InterruptFrame, exit: Exit) {
         Exit::Code(code) => (abi::CHILD_EXITED, code),
         Exit::Killed(vector) => (abi::CHILD_KILLED, vector),
         Exit::KernelFailed(cause) => (abi::CHILD_KERNEL_FAILED, cause),
+        Exit::Stopped => (abi::CHILD_STOPPED, 0),
     };
     (frame.r9, frame.r12) = (0, 0);
 }

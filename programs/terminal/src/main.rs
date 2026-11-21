@@ -5,14 +5,16 @@
 //!
 //! - the keyboard driver (badge "keyboard"): keys (`userlib::keyboard`).
 //!   Editing as in a shell: arrows, Home/End, Delete, Backspace; Up and
-//!   Down bring back earlier lines. Enter finishes a line.
+//!   Down bring back earlier lines. Enter finishes a line; Ctrl+C drops it
+//!   and is remembered until someone asks (`TAKE_INTERRUPT`).
 //! - everyone else: lines of output (the log's protocol, so `println!`
-//!   works), `READ_LINE` to get the next finished line, `CLEAR`
-//!   (`userlib::terminal`). That is the shell and the programs it starts.
+//!   works), `READ_LINE` to get the next finished line, `CLEAR`,
+//!   `TAKE_INTERRUPT` (`userlib::terminal`). That is the shell and the
+//!   programs it starts.
 //!
-//! A finished line waits until someone reads it (type-ahead). Every line
-//! shown also goes to the log – "typed: <line>" or the output as it is –
-//! so the boot test can follow along.
+//! A finished line waits until someone reads it (type-ahead); readers wait
+//! in turn for lines. Every line shown also goes to the log – "typed:
+//! <line>" or the output as it is – so the boot test can follow along.
 //!
 //! The terminal touches neither the keyboard nor the screen itself.
 //!
@@ -30,8 +32,8 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use editor::Editor;
 use panel::Panel;
-use userlib::keyboard::Key;
-use userlib::terminal::{CLEAR, READ_LINE};
+use userlib::keyboard::{CONTROL_C, Key};
+use userlib::terminal::{CLEAR, READ_LINE, TAKE_INTERRUPT};
 use userlib::{Attach, Error, Handle, Received, ReceivedMemory, Reply, abi};
 use userlib::{directory, display, exit, println, receive, reply};
 
@@ -45,9 +47,13 @@ struct Terminal {
     editor: Editor,
     /// Finished lines nobody has read yet.
     typed_ahead: VecDeque<String>,
-    /// Someone waiting in `READ_LINE`: the duty to answer, and their
-    /// message, which holds the page they lent us for the line.
-    reader: Option<(Reply, Received)>,
+    /// Those waiting in `READ_LINE`, first come first served: the duty to
+    /// answer, and their message, which holds the page lent for the line.
+    readers: VecDeque<(Reply, Received)>,
+    /// Ctrl+C was pressed and nobody has asked about it yet.
+    interrupted: bool,
+    /// More than the line being typed changed: draw everything.
+    lines_changed: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -63,7 +69,9 @@ extern "C" fn _start() -> ! {
         panel,
         editor: Editor::default(),
         typed_ahead: VecDeque::new(),
-        reader: None,
+        readers: VecDeque::new(),
+        interrupted: false,
+        lines_changed: true,
     };
     terminal.redraw();
     println!("Ready: type, and press Enter.");
@@ -83,44 +91,53 @@ extern "C" fn _start() -> ! {
                 terminal.press(key);
             }
         } else {
-            // What the others want is told by what they attach: a page
-            // lent `&` is text (the log's protocol: word 0 is only its
-            // length), a page lent `&mut` is room for a line, nothing is a
-            // command.
-            match (&message.memory, message.words[0]) {
-                (Some(ReceivedMemory::Exclusive(_)), READ_LINE) if terminal.reader.is_none() => {
-                    terminal.reader = Some((answer, message));
-                    terminal.serve_reader();
-                }
-                (Some(ReceivedMemory::Exclusive(_)), READ_LINE) => {
-                    let _ = reply(answer, Attach::Nothing, [abi::ERROR_BUSY, 0, 0, 0]);
-                }
-                (Some(ReceivedMemory::Exclusive(_)), _) | (None, _)
-                    if message.words[0] != CLEAR =>
-                {
-                    let _ = reply(answer, Attach::Nothing, [abi::ERROR_BAD_ARGUMENT, 0, 0, 0]);
-                }
-                (Some(ReceivedMemory::Exclusive(_)), _) => {
-                    let _ = reply(answer, Attach::Nothing, [abi::ERROR_BAD_ARGUMENT, 0, 0, 0]);
-                }
-                (None, _) => {
-                    let _ = reply(answer, Attach::Nothing, [0; 4]);
-                    if let Some(panel) = &mut terminal.panel {
-                        panel.clear();
-                    }
-                }
-                _ => {
-                    let status = terminal.write(&message).err().map_or(0, |error| error.0);
-                    let _ = reply(answer, Attach::Nothing, [status, 0, 0, 0]);
-                }
-            }
+            terminal.serve(answer, message);
         }
         terminal.redraw();
     }
 }
 
 impl Terminal {
+    /// Everyone but the keyboard. What they want is told by what they
+    /// attach: a page lent `&` is text (the log's protocol: word 0 is only
+    /// its length), a page lent `&mut` is room for a line, nothing is a
+    /// command.
+    fn serve(&mut self, answer: Reply, message: Received) {
+        let words = match (&message.memory, message.words[0]) {
+            (Some(ReceivedMemory::Exclusive(_)), READ_LINE) => {
+                self.readers.push_back((answer, message));
+                self.serve_readers();
+                return;
+            }
+            (Some(ReceivedMemory::Exclusive(_)), _) => [abi::ERROR_BAD_ARGUMENT, 0, 0, 0],
+            (None, CLEAR) => {
+                if let Some(panel) = &mut self.panel {
+                    panel.clear();
+                }
+                self.lines_changed = true;
+                [0; 4]
+            }
+            (None, TAKE_INTERRUPT) => [0, u64::from(core::mem::take(&mut self.interrupted)), 0, 0],
+            (None, _) => [abi::ERROR_BAD_ARGUMENT, 0, 0, 0],
+            _ => {
+                let status = self.write(&message).err().map_or(0, |error| error.0);
+                [status, 0, 0, 0]
+            }
+        };
+        let _ = reply(answer, Attach::Nothing, words);
+    }
+
     fn press(&mut self, key: Key) {
+        if key == Key::Character(CONTROL_C) {
+            let dropped = self.editor.drop_line();
+            println!("typed: {dropped}^C");
+            if let Some(panel) = &mut self.panel {
+                panel.finish_line(&alloc::format!("{dropped}^C"));
+            }
+            self.interrupted = true;
+            self.lines_changed = true;
+            return;
+        }
         let room = self
             .panel
             .as_ref()
@@ -130,8 +147,9 @@ impl Terminal {
             if let Some(panel) = &mut self.panel {
                 panel.finish_line(&line);
             }
+            self.lines_changed = true;
             self.typed_ahead.push_back(line);
-            self.serve_reader();
+            self.serve_readers();
         }
     }
 
@@ -152,37 +170,43 @@ impl Terminal {
                 panel.add_output(line);
             }
         }
+        self.lines_changed = true;
         Ok(())
     }
 
-    /// Hands the oldest unread line to the waiting reader, if both exist.
-    fn serve_reader(&mut self) {
-        if self.reader.is_none() || self.typed_ahead.is_empty() {
-            return;
+    /// Hands unread lines to waiting readers, oldest to oldest.
+    fn serve_readers(&mut self) {
+        while !self.readers.is_empty() && !self.typed_ahead.is_empty() {
+            let (answer, mut message) = self.readers.pop_front().expect("checked");
+            let line = self.typed_ahead.pop_front().expect("checked");
+            let words = match &mut message.memory {
+                Some(ReceivedMemory::Exclusive(page)) => match page.bytes_mut() {
+                    Some(page) => {
+                        let length = line.len().min(page.len());
+                        page[..length].copy_from_slice(&line.as_bytes()[..length]);
+                        [0, length as u64, 0, 0]
+                    }
+                    None => [abi::ERROR_BAD_MODE, 0, 0, 0],
+                },
+                _ => [abi::ERROR_BAD_MODE, 0, 0, 0],
+            };
+            let _ = reply(answer, Attach::Nothing, words);
         }
-        let (answer, mut message) = self.reader.take().expect("checked");
-        let line = self.typed_ahead.pop_front().expect("checked");
-        let page = match &mut message.memory {
-            Some(ReceivedMemory::Exclusive(page)) => page.bytes_mut(),
-            Some(ReceivedMemory::Owned(page)) => Some(page.bytes_mut()),
-            _ => None,
-        };
-        let words = match page {
-            Some(page) => {
-                let length = line.len().min(page.len());
-                page[..length].copy_from_slice(&line.as_bytes()[..length]);
-                [0, length as u64, 0, 0]
-            }
-            // Lent `&`: we can't write the line into it.
-            None => [abi::ERROR_BAD_MODE, 0, 0, 0],
-        };
-        let _ = reply(answer, Attach::Nothing, words);
     }
 
+    /// Draws what changed: everything, or – after most keys – only the
+    /// line being typed.
     fn redraw(&mut self) {
-        if let Some(panel) = &mut self.panel
-            && let Err(error) = panel.show(&self.editor.text(), self.editor.cursor())
-        {
+        let Some(panel) = &mut self.panel else {
+            return;
+        };
+        let (line, cursor) = (self.editor.text(), self.editor.cursor());
+        let drawn = if core::mem::take(&mut self.lines_changed) {
+            panel.show(&line, cursor)
+        } else {
+            panel.show_input(&line, cursor)
+        };
+        if let Err(error) = drawn {
             println!("cannot draw: {error:?}");
         }
     }

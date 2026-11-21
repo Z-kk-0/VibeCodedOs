@@ -16,7 +16,7 @@ use boot_info::{Framebuffer, PixelFormat};
 use paging::Caching;
 
 /// In the order `init` expects them, after the console (handle 0).
-const PROGRAMS: [(&str, &[u8]); 13] = [
+const PROGRAMS: [(&str, &[u8]); 14] = [
     ("log", programs::LOG),
     ("dir", programs::DIRECTORY),
     ("shout", programs::SHOUT),
@@ -30,6 +30,7 @@ const PROGRAMS: [(&str, &[u8]); 13] = [
     ("keyboard", programs::KEYBOARD),
     ("terminal", programs::TERMINAL),
     ("shell", programs::SHELL),
+    ("count", programs::COUNT),
 ];
 /// Services that keep running once init is done.
 const SERVICES: usize = 7; // log, dir, shout, display, keyboard, terminal, shell

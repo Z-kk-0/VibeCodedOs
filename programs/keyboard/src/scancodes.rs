@@ -2,8 +2,9 @@
 //! its "make" code when pressed and the same code + 0x80 when released.
 //! Keys added after the original PC keyboard (arrows, right Alt, …) send
 //! 0xE0 first. Which character a key types is the layout's business
-//! (`layouts.rs`); here we track the modifiers: Shift, Caps Lock, Alt, and
-//! AltGr (right Alt). Left Alt + Shift switches the layout, as on Windows.
+//! (`layouts.rs`); here we track the modifiers: Shift, Caps Lock, Ctrl, Alt
+//! and AltGr (right Alt). Left Alt + Shift switches the layout, as on
+//! Windows; Ctrl + a letter types a control character (Ctrl+C = 3).
 
 use crate::layouts::{self, Layout};
 use userlib::keyboard::{BACKSPACE, Edit, Key};
@@ -14,6 +15,7 @@ const LEFT_SHIFT: u8 = 0x2A;
 const RIGHT_SHIFT: u8 = 0x36;
 const CAPS_LOCK: u8 = 0x3A;
 const ALT: u8 = 0x38; // left Alt; with 0xE0 before it: AltGr
+const CONTROL: u8 = 0x1D; // left Ctrl; with 0xE0 before it: right Ctrl
 const BACKSPACE_KEY: u8 = 0x0E;
 const TAB: u8 = 0x0F;
 const ENTER: u8 = 0x1C; // with 0xE0: the keypad's Enter
@@ -43,6 +45,7 @@ pub struct Decoder {
     caps_lock: bool,
     alt: bool,
     alt_graph: bool,
+    control: bool,
     /// The last byte was 0xE0: this one belongs to an extended key.
     extended: bool,
     /// Index into `layouts::ALL`.
@@ -72,6 +75,10 @@ impl Decoder {
                 self.alt = pressed;
                 switch.then(|| self.next_layout())
             }
+            CONTROL => {
+                self.control = pressed;
+                None
+            }
             CAPS_LOCK if pressed => {
                 self.caps_lock = !self.caps_lock;
                 None
@@ -86,9 +93,16 @@ impl Decoder {
     }
 
     fn extended_key(&mut self, code: u8, pressed: bool) -> Option<Key> {
-        if code == ALT {
-            self.alt_graph = pressed;
-            return None;
+        match code {
+            ALT => {
+                self.alt_graph = pressed;
+                return None;
+            }
+            CONTROL => {
+                self.control = pressed;
+                return None;
+            }
+            _ => {}
         }
         if !pressed {
             return None;
@@ -107,8 +121,15 @@ impl Decoder {
 
     fn typed(&self, code: u8) -> Option<char> {
         let layout = self.layout();
+        // AltGr first: Windows sends it as Ctrl + right Alt.
         if self.alt_graph {
             return layout.alt_graph(code);
+        }
+        if self.control {
+            let letter = layout
+                .character(code, false)
+                .filter(char::is_ascii_lowercase)?;
+            return Some(char::from(letter as u8 & 0x1F));
         }
         // Caps Lock shifts letters only; Shift on top of it unshifts them.
         let shift = if layout.is_letter(code) {

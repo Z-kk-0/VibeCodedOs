@@ -25,6 +25,8 @@ const PROMPT_TEXT: &str = "> ";
 pub struct Panel {
     display: Handle,
     pixels: Memory,
+    /// Just the line being typed: what most key presses change.
+    input: Memory,
     width: u32,
     height: u32,
     /// Where the panel starts on the screen.
@@ -48,6 +50,10 @@ impl Panel {
         Ok(Self {
             display,
             pixels: Memory::new(bytes.div_ceil(abi::PAGE_SIZE))?,
+            input: Memory::new(
+                (u64::from(screen_width) * u64::from(row_height(scale)) * 4)
+                    .div_ceil(abi::PAGE_SIZE),
+            )?,
             width: screen_width,
             height,
             top: screen_height - height,
@@ -110,18 +116,7 @@ impl Panel {
             }
             y += row_height(scale);
         }
-        let x = canvas.text(PADDING, y, PROMPT_TEXT, scale, PROMPT);
-        canvas.text(x, y, line, scale, TEXT);
-        // The cursor: a bar just below the letter it stands before.
-        let cursor_x = x + cursor as u32 * font::advance(scale);
-        let cursor_y = y + (font::HEIGHT + 1) * scale;
-        canvas.fill(
-            cursor_x,
-            cursor_y,
-            font::advance(scale) - scale,
-            scale,
-            TEXT,
-        );
+        input_row(&mut canvas, y, line, cursor, scale);
         let area = Area {
             x: 0,
             y: self.top,
@@ -129,6 +124,27 @@ impl Panel {
             height,
         };
         display::draw(self.display, &self.pixels, area)
+    }
+
+    /// Draws only the line being typed – after a key that changed nothing
+    /// else, a twelfth of the pixels of `show`.
+    pub fn show_input(&mut self, line: &str, cursor: usize) -> Result<(), Error> {
+        let (width, scale) = (self.width, self.scale);
+        let height = row_height(scale);
+        let mut canvas = Canvas {
+            bytes: self.input.bytes_mut(),
+            width,
+            height,
+        };
+        canvas.fill(0, 0, width, height, BACKGROUND);
+        input_row(&mut canvas, 0, line, cursor, scale);
+        let area = Area {
+            x: 0,
+            y: self.top + PADDING + self.lines.len() as u32 * height,
+            width,
+            height,
+        };
+        display::draw(self.display, &self.input, area)
     }
 
     /// Letters that fit across the strip.
@@ -142,6 +158,22 @@ impl Panel {
         }
         self.lines.push_back((line, kind));
     }
+}
+
+/// The prompt, the line being typed, and the cursor – a bar just below
+/// the letter it stands before.
+fn input_row(canvas: &mut Canvas, y: u32, line: &str, cursor: usize, scale: u32) {
+    let x = canvas.text(PADDING, y, PROMPT_TEXT, scale, PROMPT);
+    canvas.text(x, y, line, scale, TEXT);
+    let cursor_x = x + cursor as u32 * font::advance(scale);
+    let cursor_y = y + (font::HEIGHT + 1) * scale;
+    canvas.fill(
+        cursor_x,
+        cursor_y,
+        font::advance(scale) - scale,
+        scale,
+        TEXT,
+    );
 }
 
 fn row_height(scale: u32) -> u32 {

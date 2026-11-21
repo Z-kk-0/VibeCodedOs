@@ -68,7 +68,7 @@ pub fn steps() -> Vec<Step> {
         },
         Step {
             keys: keys_for("help"),
-            expected: output("Programs I may start: hello, intruder, giver, paint."),
+            expected: output("Programs I may start: hello, count, intruder, giver, paint."),
             times: 1,
         },
         Step {
@@ -80,6 +80,32 @@ pub fn steps() -> Vec<Step> {
         Step {
             keys: keys_for("intruder"),
             expected: output("intruder was stopped by the kernel: page fault (14)."),
+            times: 1,
+        },
+        // Arguments, background jobs, stopping them, Ctrl+C.
+        Step {
+            keys: keys_for("count 3"),
+            expected: output("count ended: exit code 0."),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("count &"),
+            expected: output("[1] count runs in the background."),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("jobs"),
+            expected: output("[1] count is running."),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("stop 1"),
+            expected: output("[1] count was stopped."),
+            times: 1,
+        },
+        Step {
+            keys: [keys_for("count"), names(&["ctrl-c"])].concat(),
+            expected: output("count was stopped."),
             times: 1,
         },
     ]
@@ -117,6 +143,7 @@ fn keys_for(text: &str) -> Vec<String> {
 fn key_name(character: char) -> String {
     match character {
         ' ' => "spc".into(),
+        '&' => "shift-7".into(),
         ',' => "comma".into(),
         '.' => "dot".into(),
         '!' => "shift-1".into(),

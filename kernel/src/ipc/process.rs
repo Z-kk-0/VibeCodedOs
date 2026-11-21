@@ -23,6 +23,9 @@ pub struct Process {
     /// child it waits for. `None` while it waits for a reply: that only
     /// ends with the reply or the reply handle's loss.
     pub waiting: Option<Waiting>,
+    /// Its parent asked to stop it (DECISIONS.md, 026): it ends the next
+    /// time it would return to user mode (`stop.rs`).
+    pub stop_requested: bool,
 }
 
 pub enum Waiting {
@@ -32,12 +35,13 @@ pub enum Waiting {
         /// The tick to give up at (`ERROR_TIMED_OUT`), if any.
         deadline: Option<u64>,
     },
-    ForChild(TaskId),
-    /// For a device interrupt (`interrupt.rs`), maybe with a deadline.
-    ForInterrupt {
-        irq: u8,
+    ForChild {
+        child: TaskId,
+        /// The tick to give up at (`ERROR_TIMED_OUT`), if any.
         deadline: Option<u64>,
     },
+    /// For a device interrupt (`interrupt.rs`), maybe with a deadline.
+    ForInterrupt { irq: u8, deadline: Option<u64> },
 }
 
 impl Process {
@@ -48,6 +52,7 @@ impl Process {
             handles: HandleTable::new(),
             area: MappingArea::new(MAPPING_START, MAPPING_END, PAGE_SIZE),
             waiting: None,
+            stop_requested: false,
         };
         for capability in handles {
             process.handles.insert(capability);

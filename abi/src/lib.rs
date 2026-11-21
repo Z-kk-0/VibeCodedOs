@@ -91,14 +91,28 @@ pub const PAGE_SIZE: u64 = 4096;
 /// The child starts with them as handles 0, 1, 2, …; the reply brings a
 /// child handle (`rsi`).
 pub const SPAWN_ENTRY_SIZE: u64 = 16;
-/// `call(child)` waits until the child has ended. Reply word 0 says how,
-/// word 1 is the exit code or the CPU exception that stopped it.
+/// `call(child, [op, 0, 0, 0])`, with word 0 one of:
+/// - `CHILD_WAIT`: waits until the child has ended – at most `rcx` ticks
+///   (0 = no limit), else `ERROR_TIMED_OUT`.
+/// - `CHILD_POLL`: answers at once: how it ended, or `ERROR_TIMED_OUT`.
+/// - `CHILD_STOP`: asks the kernel to end it (DECISIONS.md, 026); answers
+///   at once. The child ends the next time it would run in user mode – a
+///   child waiting for a reply only after the reply came. Waiting for it
+///   then says `CHILD_STOPPED`.
+///
+/// When it has ended, reply word 0 says how, word 1 is the exit code or
+/// the CPU exception that stopped it.
+pub const CHILD_WAIT: u64 = 0;
+pub const CHILD_POLL: u64 = 1;
+pub const CHILD_STOP: u64 = 2;
 pub const CHILD_EXITED: u64 = 0;
 pub const CHILD_KILLED: u64 = 1;
 /// The kernel failed while working for the child – a kernel bug it could
 /// contain by ending only that program (DECISIONS.md, 024). Word 1 is the
 /// CPU exception, or `KERNEL_PANIC`.
 pub const CHILD_KERNEL_FAILED: u64 = 2;
+/// Its parent stopped it (`CHILD_STOP`). Word 1 is 0.
+pub const CHILD_STOPPED: u64 = 3;
 /// Not a CPU exception (those are 0–31): the kernel panicked.
 pub const KERNEL_PANIC: u64 = 256;
 

@@ -54,6 +54,15 @@ impl Editor {
         None
     }
 
+    /// Throws the line being typed away (Ctrl+C) and returns it.
+    pub fn drop_line(&mut self) -> String {
+        let line = self.text();
+        self.line.clear();
+        self.cursor = 0;
+        self.browsing = None;
+        line
+    }
+
     pub fn text(&self) -> String {
         self.line.iter().collect()
     }

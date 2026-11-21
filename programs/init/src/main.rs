@@ -21,10 +21,10 @@
 //! The shell (DECISIONS.md, 026) reads its commands from the terminal, and
 //! may start exactly the programs init gives it a copy of: `SHELL_PROGRAMS`.
 //!
-//! Handles: 0 = console, 1–13 = the programs log, dir, shout, vandal,
+//! Handles: 0 = console, 1–14 = the programs log, dir, shout, vandal,
 //! hello, owner, giver, intruder, display, paint, keyboard, terminal,
-//! shell; 14 = the screen (device); 15, 16 = the keyboard's ports and
-//! interrupt.
+//! shell, count; 15 = the screen (device); 16, 17 = the keyboard's ports
+//! and interrupt.
 
 #![no_std]
 #![no_main]
@@ -47,12 +47,14 @@ const PAINT: Handle = Handle(10);
 const KEYBOARD: Handle = Handle(11);
 const TERMINAL: Handle = Handle(12);
 const SHELL: Handle = Handle(13);
-const SCREEN: Handle = Handle(14);
-const KEYBOARD_PORTS: Handle = Handle(15);
-const KEYBOARD_INTERRUPT: Handle = Handle(16);
+const COUNT: Handle = Handle(14);
+const SCREEN: Handle = Handle(15);
+const KEYBOARD_PORTS: Handle = Handle(16);
+const KEYBOARD_INTERRUPT: Handle = Handle(17);
 /// What the shell may start – nothing else exists for it.
-const SHELL_PROGRAMS: [(&str, Handle); 4] = [
+const SHELL_PROGRAMS: [(&str, Handle); 5] = [
     ("hello", HELLO),
+    ("count", COUNT),
     ("intruder", INTRUDER),
     ("giver", GIVER),
     ("paint", PAINT),
@@ -209,7 +211,8 @@ extern "C" fn _start() -> ! {
         names.bytes_mut()[at + name.len()] = b'\n';
         at += name.len() + 1;
     }
-    let [hello, intruder, giver, paint] = SHELL_PROGRAMS.map(|(_, program)| Pass::Copy(program));
+    let [hello, count, intruder, giver, paint] =
+        SHELL_PROGRAMS.map(|(_, program)| Pass::Copy(program));
     must(
         spawn(
             SHELL,
@@ -218,6 +221,7 @@ extern "C" fn _start() -> ! {
                 Pass::Move(directory_shell),
                 Pass::Memory(names),
                 hello,
+                count,
                 intruder,
                 giver,
                 paint,

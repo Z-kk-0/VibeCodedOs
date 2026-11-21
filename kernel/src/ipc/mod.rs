@@ -27,6 +27,7 @@ mod ports;
 mod process;
 mod reply;
 mod spawn;
+mod stop;
 mod timeouts;
 mod transfer;
 
@@ -39,6 +40,7 @@ pub use object::Capability;
 pub use process::Process;
 pub use reply::reply;
 pub use spawn::{finish as finish_spawn, load as load_child};
+pub use stop::{any_pending as stop_pending, must_stop};
 pub use timeouts::expire_timeouts;
 
 use crate::arch::InterruptFrame;
@@ -81,7 +83,9 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
             let program = *program;
             return spawn::prepare(tasks, me, program, &message, frame);
         }
-        Some(&Capability::Child(child)) => return spawn::wait_for(tasks, core, child, frame),
+        Some(&Capability::Child(child)) => {
+            return spawn::child_call(tasks, core, child, &message, frame);
+        }
         Some(Capability::Device(_)) => {
             device::open(process, Handle(frame.rdi), &message, frame);
             return Next::Continue;

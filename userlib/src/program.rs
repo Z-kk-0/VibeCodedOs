@@ -1,6 +1,6 @@
 //! Starting programs and waiting for them (DECISIONS.md, 021, 022).
 
-use crate::ipc::{Attach, Error, Handle, call};
+use crate::ipc::{Attach, Error, Handle, call, call_timeout};
 use crate::memory::Memory;
 
 /// How a handle goes to a new program.
@@ -22,6 +22,8 @@ pub enum Ended {
     /// The kernel failed while working for it and ended only it (a kernel
     /// bug, contained): the CPU exception, or `abi::KERNEL_PANIC`.
     KernelFailed(u64),
+    /// Its parent stopped it (`stop`).
+    Stopped,
 }
 
 /// Starts the program behind `program`, with exactly `handles` as its
@@ -51,10 +53,36 @@ pub fn spawn<const N: usize>(program: Handle, handles: [Pass; N]) -> Result<Hand
 
 /// Waits until the child has ended.
 pub fn wait(child: Handle) -> Result<Ended, Error> {
-    let reply = call(child, Attach::Nothing, [0; 4])?;
-    Ok(match reply.words[0] {
-        abi::CHILD_EXITED => Ended::Exited(reply.words[1]),
-        abi::CHILD_KERNEL_FAILED => Ended::KernelFailed(reply.words[1]),
-        _ => Ended::Killed(reply.words[1]),
-    })
+    wait_timeout(child, 0)
+}
+
+/// Waits at most `ticks` (0 = no limit) for the child to end;
+/// `ERROR_TIMED_OUT` if it is still running.
+pub fn wait_timeout(child: Handle, ticks: u64) -> Result<Ended, Error> {
+    let reply = call_timeout(child, Attach::Nothing, [abi::CHILD_WAIT, 0, 0, 0], ticks)?;
+    Ok(ended(reply.words))
+}
+
+/// How the child ended, if it has – without waiting.
+pub fn poll(child: Handle) -> Result<Option<Ended>, Error> {
+    match call(child, Attach::Nothing, [abi::CHILD_POLL, 0, 0, 0]) {
+        Ok(reply) => Ok(Some(ended(reply.words))),
+        Err(Error(abi::ERROR_TIMED_OUT)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Asks the kernel to end the child (DECISIONS.md, 026). It ends the next
+/// time it would run its own code; `wait` then says `Ended::Stopped`.
+pub fn stop(child: Handle) -> Result<(), Error> {
+    call(child, Attach::Nothing, [abi::CHILD_STOP, 0, 0, 0]).map(|_| ())
+}
+
+fn ended(words: [u64; 4]) -> Ended {
+    match words[0] {
+        abi::CHILD_EXITED => Ended::Exited(words[1]),
+        abi::CHILD_KERNEL_FAILED => Ended::KernelFailed(words[1]),
+        abi::CHILD_STOPPED => Ended::Stopped,
+        _ => Ended::Killed(words[1]),
+    }
 }
