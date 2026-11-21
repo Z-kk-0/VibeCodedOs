@@ -50,13 +50,18 @@ UEFI firmware (OVMF in QEMU)
               │  on more than one core; a faulting and a panicking task
               │  must end alone (contained kernel bugs); freeing their
               │  stacks must have sent TLB shootdowns                     task/checks.rs
-              ├─ ipc::check: starts only `init` (console, 10 Program     kernel/src/ipc/checks.rs
-              │  handles, the screen as a Device), waits for its exit    programs/init
+              ├─ device interrupts: ACPI MADT → I/O APICs, every line     kernel/src/arch/io_apic.rs
+              │  masked; only IRQ 1 (keyboard) routed to the boot core
+              ├─ ipc::check: starts only `init` (console, 12 Program     kernel/src/ipc/checks.rs
+              │  handles, the screen as a Device, the keyboard's ports
+              │  and interrupt), waits for its exit                      programs/init
               │    init: endpoints, badged sending ends, starts log,
               │    dir, vandal, hello, owner, giver, shout, intruder,
               │    display (gets the screen), paint (draws through it);
-              │    checks how each test program ended → exit 0 / n
-              │  afterwards: log, dir, shout, display keep running
+              │    checks how each test program ended; then terminal and
+              │    keyboard (gets the keyboard's handles) → exit 0 / n
+              │  afterwards: log, dir, shout, display, keyboard and
+              │  terminal keep running
               ├─ "Hematite kernel ready."   ← the boot test looks for this line
               └─ the boot task ends: from now on only idle tasks (hlt) run
                  in the kernel, everything else is user programs
@@ -98,6 +103,7 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 | `0x20` | APIC timer (every core; only core 0 advances the clock) |
 | `0x30` | yield (`int 0x30`, kernel tasks) |
 | `0x40` | TLB shootdown IPI |
+| `0x50`–`0x5F` | ISA device interrupts through the I/O APIC (today only `0x51`, the keyboard) |
 | `0x80` | system call (`int 0x80`, callable from ring 3) |
 | `0xFF` | APIC spurious interrupt |
 
@@ -105,7 +111,8 @@ System calls (`abi` crate, register table there): `int 0x80`, number in `rax`. `
 and the capability calls (DECISIONS 020, 021): `call`, `receive`, `reply`, `memory_new`, `drop`,
 `endpoint_new`, `mint`, `revoke`. Kernel objects answer `call` at once: the console prints, a
 `Program` starts a process, a `Child` says how it ended, a `Device` opens (its handle becomes the
-device's memory, mapped into the caller).
+device's memory, mapped into the caller), `Ports` reads or writes an I/O port. An `Interrupt` answers
+when its device line fires.
 Programs use `userlib` (typed wrappers, `println!` via the `log` service, panic handler).
 
 Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020, 021): each process (`ipc/process.rs`) has
@@ -123,9 +130,16 @@ Devices and caching (DECISIONS 023): a memory object is RAM or *device memory* (
 write-combining, `x86::pat`). The screen's framebuffer is such an object, behind a `Device`
 handle that `init` moves to `display`. Clients lend `display` their pixels (`userlib::display`).
 
+Device interrupts (DECISIONS 025): the I/O APIC (`arch/io_apic.rs`, wiring from the ACPI MADT) keeps
+every line masked except the ones handed out. When a routed line fires, the kernel acknowledges it
+and wakes the program waiting in `call` on its `Interrupt` handle (`ipc/interrupt.rs`) – the
+interrupt *is* the reply. Port I/O goes through a `Ports` handle (`ipc/ports.rs`): the kernel does
+the `in`/`out` for the one port asked for. `keyboard` holds both for the keyboard controller and
+calls `terminal` with each key (`userlib::keyboard`).
+
 | Program | Kind | Handles it starts with | What it proves |
 |---|---|---|---|
-| `init` | first program | 0 console, 1–10 programs, 11 screen | user space wires itself up |
+| `init` | first program | 0 console, 1–12 programs, 13 screen, 14 keyboard ports, 15 keyboard interrupt | user space wires itself up |
 | `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
 | `dir` (`directory`) | service | 0 log, 1 directory endpoint (receive) | names; parked lookups (reply handles) |
 | `shout` | service | 0 log, 1 directory (registers itself) | `&mut` borrow and move work |
@@ -136,6 +150,8 @@ handle that `init` moves to `display`. Clients lend `display` their pixels (`use
 | `intruder` | attacker | 0 log | forged handles and kernel reads fail |
 | `display` | driver, service | 0 log, 1 directory, 2 screen (device) | a driver in user space; device memory, write-combining |
 | `paint` | program | 0 log, 1 directory | drawing through `display` with lent memory (the boot test's screenshot checks it) |
+| `keyboard` | driver | 0 log, 1 ports 0x60/0x64, 2 IRQ 1, 3 keys (sending end to `terminal`) | interrupts as replies; port I/O through a handle |
+| `terminal` | program, service | 0 log, 1 directory, 2 keys (receive) | typing shows up on the screen (the boot test types a line) |
 
 ## Crates
 
@@ -144,18 +160,18 @@ handle that `init` moves to `display`. Clients lend `display` their pixels (`use
 | `loader` | `x86_64-unknown-uefi` | UEFI app: loads the kernel, builds its page tables, leaves the firmware. Hand-written UEFI types in `loader/src/uefi/`. |
 | `kernel` | `x86_64-unknown-none` | The kernel. Everything CPU-specific is in `kernel/src/arch/`. |
 | `boot_info` | both + host | The loader→kernel contract: `BootInfo` (memory regions, ACPI root, core startup pages, framebuffer), address space layout. No UEFI types. |
-| `acpi` | any + host | Just enough ACPI to find the CPU cores: RSDP → XSDT/RSDT → MADT, checksums. Memory access via a trait. Unit-tested. |
+| `acpi` | any + host | Just enough ACPI to find the CPU cores and the interrupt wiring (I/O APICs, ISA overrides): RSDP → XSDT/RSDT → MADT, checksums. Memory access via a trait. Unit-tested. |
 | `elf` | any + host | Pure ELF parsing/loading/relocation, segment permissions. Unit-tested on the host. |
 | `paging` | any + host | 4-level page tables: map 4 KiB/2 MiB pages with permissions and caching, translate, clear. Memory access via a trait. Unit-tested. |
 | `frame_table` | any + host | Physical frame bookkeeping: state per frame, O(1) free list. Unit-tested. |
 | `heap` | any + host | Heap allocator: size classes in self-aligned slabs (returned when empty) + page-backed large blocks. Used by the kernel and by `userlib`. Unit-tested. |
 | `scheduling` | any + host | Run queue shared by all cores: round robin, a current and an idle task per core, sleeping, blocking, freeing exited tasks; core sets for up to 256 cores. Unit-tested. |
-| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs, the page attribute table). Unit-tested. |
+| `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs, I/O APIC redirection entries, the page attribute table). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
-| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges, device info (pixel formats). |
-| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, the directory and display protocols, a heap (`alloc`), `println!`, panic handler. |
+| `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges, device info (pixel formats), port operations. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, interrupts and ports, the directory, display and keyboard protocols, a 5×7 font, a heap (`alloc`), `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
-| `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`; checks QEMU screenshots. |
+| `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`; types on the emulated keyboard and checks QEMU screenshots. |
 
 Rule of thumb: logic that is "bytes in, bytes out" goes into a host-testable crate with unit tests;
 code that executes privileged instructions stays in `kernel`/`loader` and is covered by the
@@ -186,6 +202,8 @@ Done:
       (DECISIONS 023)
 - [x] Robustness: kernel bugs that provably touched no shared state end only their task, the
       boot task ends after boot (DECISIONS 024)
+- [x] Keyboard: I/O APIC routing, interrupts delivered as IPC replies, I/O ports as a handle;
+      `keyboard` driver and `terminal` in user space (DECISIONS 025)
 
 Next: decided together with the owner – candidates are the open `design` and `idea` issues.
 
@@ -208,6 +226,8 @@ known limits below, `idea` for things worth considering.
   (they're copied, not shared) – `paging::map` panics otherwise; today all do.
 - Screen (DECISIONS 023): one, in the firmware's mode, 32-bit RGB/BGR only. `display` handles one
   request at a time and copies whole areas (no double buffering).
+- Device interrupts (DECISIONS 025): ISA IRQs only, edge-triggered, all to the boot core; port I/O
+  costs a system call per byte. The keyboard knows the US layout and no arrow keys.
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.

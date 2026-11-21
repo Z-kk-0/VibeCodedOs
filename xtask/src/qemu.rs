@@ -1,10 +1,10 @@
 //! Booting Hematite in QEMU: in a window (`run`) or headless, checking the
-//! serial log for an expected line and, after a normal boot, the screen
-//! (`boot-test`).
+//! serial log for an expected line and, after a normal boot, the keyboard
+//! and the screen (`boot-test`).
 
 use crate::build::build;
-use crate::screenshot;
 use crate::{Crash, Options, Result, root, run_command};
+use crate::{keyboard, screenshot};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 /// Printed by the kernel once boot finished and timer interrupts arrive.
 const READY_MARKER: &str = "Hematite kernel ready.";
 const BOOT_TEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// For each step after boot: the keyboard driver starting, the typed line.
+const STEP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Between two keys: `sendkey` holds each one down for 100 ms.
+const KEY_INTERVAL: Duration = Duration::from_millis(150);
 /// Hematite must use every core (DECISIONS.md, ground rules), so QEMU gets
 /// several. `HEMATITE_CORES` overrides it, e.g. to try 1 or 8.
 const DEFAULT_CORES: usize = 4;
@@ -41,14 +45,16 @@ pub fn boot_test(options: Options) -> Result {
     qemu.args(["-display", "none", "-serial"])
         .arg(format!("file:{}", log_path.display()))
         .stdout(Stdio::null());
-    // QEMU's monitor on our pipe: how we ask it for a screenshot.
+    // QEMU's monitor on our pipe: how we type and ask for a screenshot.
     qemu.args(["-monitor", "stdio"]).stdin(Stdio::piped());
     let mut child = qemu
         .spawn()
         .map_err(|error| format!("cannot start QEMU: {error}"))?;
-    let found = wait_for_line(&log_path, expected, &mut child);
-    let screenshot =
-        (found && options.crash == Crash::None).then(|| take_screenshot(&mut child, &screen_path));
+    let found = wait_for_line(&log_path, expected, &mut child, BOOT_TEST_TIMEOUT);
+    let normal_boot = found && options.crash == Crash::None;
+    // Type first, so the screenshot shows the terminal with the line.
+    let typed = normal_boot.then(|| type_a_line(&mut child, &log_path));
+    let screenshot = normal_boot.then(|| take_screenshot(&mut child, &screen_path));
     let _ = child.kill();
     let _ = child.wait();
 
@@ -58,6 +64,9 @@ pub fn boot_test(options: Options) -> Result {
     let cores_marker = format!("{} cores online.", cores(options)?);
     if found && options.crash == Crash::None && !log.contains(&cores_marker) {
         return Err(format!("boot test failed: no '{cores_marker}'"));
+    }
+    if let Some(typed) = typed {
+        typed?;
     }
     if let Some(taken) = screenshot {
         taken.and_then(|()| screenshot::check(&screen_path))?;
@@ -73,17 +82,47 @@ pub fn boot_test(options: Options) -> Result {
     }
 }
 
+/// Waits for the keyboard driver, types `keyboard::TYPED` and Enter, and
+/// waits until the terminal logs the line (see `keyboard.rs`).
+fn type_a_line(qemu: &mut Child, log_path: &Path) -> Result {
+    if !wait_for_line(log_path, keyboard::KEYBOARD_READY, qemu, STEP_TIMEOUT) {
+        return Err(format!(
+            "keyboard test failed: no '{}'",
+            keyboard::KEYBOARD_READY
+        ));
+    }
+    for key in keyboard::key_names(keyboard::TYPED) {
+        monitor(qemu, &format!("sendkey {key}"))?;
+        sleep(KEY_INTERVAL);
+    }
+    let expected = keyboard::expected_line();
+    if !wait_for_line(log_path, &expected, qemu, STEP_TIMEOUT) {
+        return Err(format!(
+            "keyboard test failed: typed a line, but no '{expected}'"
+        ));
+    }
+    println!(
+        "Typed '{}' on the keyboard: the terminal got it.",
+        keyboard::TYPED
+    );
+    Ok(())
+}
+
+/// Sends one command line to QEMU's monitor.
+fn monitor(qemu: &mut Child, command: &str) -> Result {
+    let monitor = qemu.stdin.as_mut().ok_or("QEMU has no monitor pipe")?;
+    monitor
+        .write_all(format!("{command}\n").as_bytes())
+        .and_then(|()| monitor.flush())
+        .map_err(|error| format!("cannot talk to the QEMU monitor: {error}"))
+}
+
 /// Asks QEMU's monitor for a screendump and waits until the file is complete.
 fn take_screenshot(qemu: &mut Child, path: &Path) -> Result {
     // Forward slashes: the monitor reads backslashes as escapes; Windows
     // takes either.
     let path_text = path.display().to_string().replace('\\', "/");
-    let command = format!("screendump {path_text}\n");
-    let monitor = qemu.stdin.as_mut().ok_or("QEMU has no monitor pipe")?;
-    monitor
-        .write_all(command.as_bytes())
-        .and_then(|()| monitor.flush())
-        .map_err(|error| format!("cannot talk to the QEMU monitor: {error}"))?;
+    monitor(qemu, &format!("screendump {path_text}"))?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if fs::read(path).is_ok_and(|bytes| screenshot::parse_ppm(&bytes).is_ok()) {
@@ -94,8 +133,8 @@ fn take_screenshot(qemu: &mut Child, path: &Path) -> Result {
     Err("QEMU took no screenshot within 5 s".into())
 }
 
-fn wait_for_line(log_path: &Path, expected: &str, qemu: &mut Child) -> bool {
-    let deadline = Instant::now() + BOOT_TEST_TIMEOUT;
+fn wait_for_line(log_path: &Path, expected: &str, qemu: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if read_log(log_path).contains(expected) {
             sleep(Duration::from_millis(500)); // let the rest of a multi-line report arrive

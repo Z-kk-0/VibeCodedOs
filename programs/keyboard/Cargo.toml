@@ -1,0 +1,8 @@
+[package]
+name = "keyboard"
+version = "0.1.0"
+edition = "2024"
+description = "The keyboard driver: waits for the keyboard's interrupt, turns scancodes into keys"
+
+[dependencies]
+userlib = { path = "../../userlib" }

@@ -111,6 +111,17 @@ pub const KERNEL_PANIC: u64 = 256;
 pub const PIXEL_RED_GREEN_BLUE: u64 = 0;
 pub const PIXEL_BLUE_GREEN_RED: u64 = 1;
 
+/// `call(interrupt)` waits until the device interrupt line behind the handle
+/// fired (DECISIONS.md, 025) – at most `rcx` ticks, like a queue (0 = no
+/// limit). Reply word 0: how often it fired since the last call (at least
+/// 1). Interrupts that come while nobody waits are counted, not lost.
+///
+/// `call(ports, [op, offset, value, 0])` reads or writes one byte of an I/O
+/// port the handle covers: the port is the handle's first port + `offset`.
+/// The reply's word 0 is the byte read (`PORT_READ`) or 0.
+pub const PORT_READ: u64 = 1;
+pub const PORT_WRITE: u64 = 2;
+
 /// Results from `u64::MAX` downwards are errors.
 pub const ERROR_UNKNOWN_CALL: u64 = u64::MAX;
 /// The handle doesn't exist (or no longer does).

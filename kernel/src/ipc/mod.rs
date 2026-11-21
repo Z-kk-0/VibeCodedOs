@@ -17,20 +17,23 @@ mod device;
 mod endpoint;
 mod endpoint_calls;
 mod exit;
+mod interrupt;
 mod lending;
 mod memory;
 mod memory_calls;
 mod message;
 mod object;
+mod ports;
 mod process;
 mod reply;
 mod spawn;
 mod timeouts;
 mod transfer;
 
-pub use checks::check;
+pub use checks::{KEYBOARD_IRQ, check};
 pub use endpoint_calls::{endpoint_new, mint, revoke};
 pub use exit::on_exit;
+pub use interrupt::fired as interrupt_fired;
 pub use memory_calls::{drop_handle, memory_info, memory_new};
 pub use object::Capability;
 pub use process::Process;
@@ -81,6 +84,16 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
         Some(&Capability::Child(child)) => return spawn::wait_for(tasks, core, child, frame),
         Some(Capability::Device(_)) => {
             device::open(process, Handle(frame.rdi), &message, frame);
+            return Next::Continue;
+        }
+        Some(&Capability::Interrupt(irq)) => {
+            if message.attachment.is_some() {
+                return fail_now(frame, abi::ERROR_WRONG_KIND);
+            }
+            return interrupt::wait(tasks, core, irq, frame);
+        }
+        Some(&Capability::Ports(ports)) => {
+            ports::access(ports, &message, frame);
             return Next::Continue;
         }
         Some(Capability::Endpoint(endpoint)) if endpoint.is_revoked() => {

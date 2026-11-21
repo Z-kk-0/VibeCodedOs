@@ -1,10 +1,11 @@
-//! Just enough ACPI to find the machine's CPU cores.
+//! Just enough ACPI to find the machine's CPU cores and how its device
+//! interrupts are wired.
 //!
 //! The firmware describes the hardware in a tree of tables in memory:
 //! the root pointer (RSDP) leads to a list of tables (XSDT, or the older
 //! RSDT), one of which is the MADT ("APIC" table) listing every core's
-//! local APIC. ACPI spec 6.5: §5.2.5 (RSDP), §5.2.6 (header), §5.2.7/8
-//! (RSDT/XSDT), §5.2.12 (MADT).
+//! local APIC and its I/O APICs. ACPI spec 6.5: §5.2.5 (RSDP), §5.2.6
+//! (header), §5.2.7/8 (RSDT/XSDT), §5.2.12 (MADT).
 //!
 //! Pure parsing over a `PhysicalMemory` trait, so it's tested on the host.
 
@@ -20,7 +21,7 @@ mod tests;
 use alloc::vec::Vec;
 use bytes::{checksum_ok, read_u32, read_u64};
 
-pub use madt::Core;
+pub use madt::{Core, InterruptWiring, IoApic, SourceOverride};
 
 /// Reads physical memory: the kernel goes through its window, tests
 /// through a byte array.
@@ -53,6 +54,15 @@ const HEADER_SIZE: usize = 36;
 pub fn find_cores(root_pointer: u64, memory: &impl PhysicalMemory) -> Result<Vec<Core>, Error> {
     let madt = find_table(root_pointer, memory, *b"APIC")?.ok_or(Error::NoMadt)?;
     Ok(madt::cores(madt))
+}
+
+/// The I/O APICs and ISA interrupt overrides the MADT lists.
+pub fn find_interrupt_wiring(
+    root_pointer: u64,
+    memory: &impl PhysicalMemory,
+) -> Result<InterruptWiring, Error> {
+    let madt = find_table(root_pointer, memory, *b"APIC")?.ok_or(Error::NoMadt)?;
+    Ok(madt::wiring(madt))
 }
 
 /// Walks the root pointer and the table list to the table named `signature`.

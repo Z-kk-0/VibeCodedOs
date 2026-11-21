@@ -7,7 +7,7 @@ mod stubs;
 pub use frame::InterruptFrame;
 
 use super::per_core::{take_release_flag, this_core};
-use super::{apic, shootdown};
+use super::{apic, io_apic, shootdown};
 use core::sync::atomic::AtomicBool;
 use x86::exceptions::FIRST_NON_EXCEPTION;
 
@@ -69,6 +69,12 @@ fn dispatch(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         SHOOTDOWN_VECTOR => {
             shootdown::serve_pending();
             apic::end_of_interrupt();
+        }
+        vector if io_apic::isa_irq(vector).is_some() => {
+            // Edge-triggered only (`io_apic::route_isa`): acknowledging
+            // first loses nothing – a new edge is a new interrupt.
+            apic::end_of_interrupt();
+            crate::ipc::interrupt_fired(io_apic::isa_irq(vector).expect("checked"));
         }
         // Spurious interrupts must *not* be acknowledged (SDM Vol. 3A, §11.9).
         apic::SPURIOUS_VECTOR => {}

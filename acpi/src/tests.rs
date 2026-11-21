@@ -145,3 +145,50 @@ fn stops_at_a_broken_entry() {
     let cores = find_cores(0x100, &machine_v2(&madt)).unwrap();
     assert_eq!(cores, [Core { apic_id: 0 }]);
 }
+
+#[test]
+fn reads_io_apics_and_isa_overrides() {
+    let mut io_apic = vec![1, 12, 0, 0];
+    io_apic.extend_from_slice(&0xFEC0_0000u32.to_le_bytes());
+    io_apic.extend_from_slice(&0u32.to_le_bytes());
+    // ISA IRQ 0 (the PIT) arrives on line 2; IRQ 9 is level, active low.
+    let mut timer = vec![2, 10, 0, 0];
+    timer.extend_from_slice(&2u32.to_le_bytes());
+    timer.extend_from_slice(&0u16.to_le_bytes());
+    let mut acpi = vec![2, 10, 0, 9];
+    acpi.extend_from_slice(&9u32.to_le_bytes());
+    acpi.extend_from_slice(&0x000Fu16.to_le_bytes());
+    let mut other_bus = vec![2, 10, 1, 4]; // not ISA: ignored
+    other_bus.extend_from_slice(&20u32.to_le_bytes());
+    other_bus.extend_from_slice(&0u16.to_le_bytes());
+    let memory = machine_v2(&madt(&[
+        &local_apic(0, 1),
+        &io_apic,
+        &timer,
+        &acpi,
+        &other_bus,
+    ]));
+    let wiring = find_interrupt_wiring(0x100, &memory).unwrap();
+    assert_eq!(
+        wiring.io_apics,
+        [IoApic {
+            address: 0xFEC0_0000,
+            first_line: 0
+        }]
+    );
+    assert_eq!(
+        wiring.overrides,
+        [
+            SourceOverride {
+                irq: 0,
+                line: 2,
+                flags: 0
+            },
+            SourceOverride {
+                irq: 9,
+                line: 9,
+                flags: 0x000F
+            },
+        ]
+    );
+}

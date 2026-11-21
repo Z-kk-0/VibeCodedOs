@@ -1,7 +1,8 @@
 //! Proof from outside the machine that Hematite drew on the screen: after a
 //! normal boot test QEMU takes a screenshot (`screendump`, a PPM file) and
-//! we check two pixels of the picture `programs/paint` draws. Neither the
-//! kernel nor any program can fake this – it is what a person would see.
+//! we check pixels of the picture `programs/paint` draws and of the
+//! terminal strip below it (`programs/terminal`). Neither the kernel nor
+//! any program can fake this – it is what a person would see.
 
 use crate::Result;
 use std::fs;
@@ -11,6 +12,8 @@ use std::path::Path;
 /// the top-left corner) and the red streak through the centre.
 const BACKGROUND_TOP: [u8; 3] = [0x15, 0x16, 0x1A];
 const STREAK: [u8; 3] = [0x9B, 0x2A, 0x22];
+/// `programs/terminal/src/panel.rs`: the strip at the bottom of the screen.
+const TERMINAL: [u8; 3] = [0x0E, 0x0F, 0x12];
 
 /// A screenshot: width, height, and 3 bytes (red, green, blue) per pixel.
 pub struct Image {
@@ -33,17 +36,18 @@ pub fn check(path: &Path) -> Result {
     let checks = [
         ("top-left corner", 0, 0, BACKGROUND_TOP),
         ("centre", image.width / 2, image.height / 2, STREAK),
+        ("bottom-left corner", 0, image.height - 1, TERMINAL),
     ];
     for (name, x, y, expected) in checks {
         let found = image.pixel(x, y);
         if found != expected {
             return Err(format!(
-                "screenshot: the {name} ({x}, {y}) is {found:02X?}, not {expected:02X?} - paint's picture isn't on the screen"
+                "screenshot: the {name} ({x}, {y}) is {found:02X?}, not {expected:02X?} - the picture or the terminal is not on the screen"
             ));
         }
     }
     println!(
-        "Screenshot {}x{}: paint's picture is on the screen.",
+        "Screenshot {}x{}: paint's picture and the terminal are on the screen.",
         image.width, image.height
     );
     Ok(())

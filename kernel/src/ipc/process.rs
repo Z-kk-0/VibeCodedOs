@@ -33,6 +33,11 @@ pub enum Waiting {
         deadline: Option<u64>,
     },
     ForChild(TaskId),
+    /// For a device interrupt (`interrupt.rs`), maybe with a deadline.
+    ForInterrupt {
+        irq: u8,
+        deadline: Option<u64>,
+    },
 }
 
 impl Process {

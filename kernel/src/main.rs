@@ -78,6 +78,17 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     } else {
         println!("No screen: the display service will draw nowhere.");
     }
+    // Device interrupts: all masked, then only the keyboard's let through.
+    // It goes to whichever program init gives its handle (DECISIONS.md, 025).
+    let io_apics = arch::init_device_interrupts(boot_info.acpi_root);
+    if arch::route_isa_interrupt(ipc::KEYBOARD_IRQ) {
+        println!(
+            "{io_apics} I/O APIC(s), every line masked but IRQ {} (keyboard) - init gets it as a handle.",
+            ipc::KEYBOARD_IRQ
+        );
+    } else {
+        println!("No route for the keyboard's interrupt: nobody will hear keys.");
+    }
     ipc::check(screen);
 
     println!("Hematite kernel ready.");

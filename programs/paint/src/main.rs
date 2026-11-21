@@ -10,7 +10,6 @@
 #![no_std]
 #![no_main]
 
-mod font;
 mod picture;
 
 use userlib::display::{self, Area};

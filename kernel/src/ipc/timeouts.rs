@@ -1,10 +1,12 @@
 //! Giving up on waiting (DECISIONS.md, 021). A timeout covers only the time
-//! in an endpoint's queue: a caller whose message no server took yet, a
-//! server no message came to. Once a server took a call, the caller waits
-//! for the reply or for the reply handle's loss – cutting that short would
-//! mean tearing lent memory out of a server in the middle of its work.
+//! in an endpoint's queue – a caller whose message no server took yet, a
+//! server no message came to – and waiting for a device interrupt (025).
+//! Once a server took a call, the caller waits for the reply or for the
+//! reply handle's loss – cutting that short would mean tearing lent memory
+//! out of a server in the middle of its work.
 
 use super::delivery::fail_call;
+use super::interrupt;
 use super::process::Waiting;
 use super::transfer::process;
 use crate::task::Tasks;
@@ -42,23 +44,38 @@ pub fn expire_timeouts(tasks: &mut Tasks, now: u64) {
         let Ok(process) = process(tasks, id) else {
             continue;
         };
-        let Some(Waiting::InQueue {
-            endpoint,
-            as_caller,
-            deadline: Some(deadline),
-        }) = &process.waiting
-        else {
-            continue;
+        let deadline = match &process.waiting {
+            Some(
+                Waiting::InQueue {
+                    deadline: Some(deadline),
+                    ..
+                }
+                | Waiting::ForInterrupt {
+                    deadline: Some(deadline),
+                    ..
+                },
+            ) => *deadline,
+            _ => continue,
         };
-        if *deadline > now {
-            next = next.min(*deadline);
+        if deadline > now {
+            next = next.min(deadline);
             continue;
         }
-        // Still in the queue? Then nobody took the call (or sent one) yet.
-        let was_waiting = if *as_caller {
-            endpoint.remove_caller(id).is_some()
-        } else {
-            endpoint.remove_receiver(id)
+        let was_waiting = match &process.waiting {
+            // Still in the queue? Then nobody took the call (or sent one) yet.
+            Some(Waiting::InQueue {
+                endpoint,
+                as_caller: true,
+                ..
+            }) => endpoint.remove_caller(id).is_some(),
+            Some(Waiting::InQueue { endpoint, .. }) => endpoint.remove_receiver(id),
+            // An interrupt wakes its waiter with the scheduler lock held, as
+            // we hold it now: still blocked means it didn't fire.
+            Some(Waiting::ForInterrupt { irq, .. }) => {
+                interrupt::stop_waiting(*irq, id);
+                true
+            }
+            _ => unreachable!("matched above"),
         };
         if was_waiting {
             fail_call(tasks, id, abi::ERROR_TIMED_OUT);

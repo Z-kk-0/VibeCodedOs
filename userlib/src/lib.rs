@@ -18,9 +18,13 @@ pub mod device;
 pub mod directory;
 pub mod display;
 mod endpoint;
+pub mod font;
+pub mod interrupt;
 mod ipc;
+pub mod keyboard;
 mod memory;
 mod message;
+pub mod ports;
 // Public only because `println!` expands to code that uses it.
 #[doc(hidden)]
 pub mod print;

@@ -25,6 +25,10 @@ pub enum Capability {
     Child(TaskId),
     /// A device's memory, not opened yet; `call` opens it (see `Device`).
     Device(Device),
+    /// A device interrupt line (an ISA IRQ); `call` waits until it fires.
+    Interrupt(u8),
+    /// Some I/O ports; `call` reads or writes one of them.
+    Ports(Ports),
 }
 
 impl Capability {
@@ -115,6 +119,25 @@ pub struct Lend {
     /// Who holds the borrowed memory, and under which handle.
     pub borrower_task: TaskId,
     pub borrower: Handle,
+}
+
+/// Up to 64 I/O ports near each other: `first + n` for every bit `n` set in
+/// `mask` (the keyboard controller's are 0x60 and 0x64, not 0x61–0x63).
+#[derive(Clone, Copy)]
+pub struct Ports {
+    pub first: u16,
+    pub mask: u64,
+}
+
+impl Ports {
+    /// The port at `offset`, if this handle covers it.
+    pub fn port(self, offset: u64) -> Option<u16> {
+        let covered = offset < 64 && self.mask & (1 << offset) != 0;
+        if !covered {
+            return None;
+        }
+        self.first.checked_add(offset as u16)
+    }
 }
 
 #[derive(Clone, Copy)]

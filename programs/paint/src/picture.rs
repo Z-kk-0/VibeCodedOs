@@ -6,7 +6,7 @@
 //! the top-left one is `BACKGROUND_TOP`, the one in the centre of the
 //! screen is `STREAK` – keep them so.
 
-use crate::font;
+use userlib::font;
 
 pub const BACKGROUND_TOP: u32 = 0x15_16_1A;
 const BACKGROUND_BOTTOM: u32 = 0x2B_2D_34;

@@ -5,6 +5,7 @@
 
 mod build;
 mod check;
+mod keyboard;
 mod qemu;
 mod screenshot;
 mod symbols;

@@ -89,6 +89,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
 name = "loader"
 version = "0.1.0"
 dependencies = [
@@ -128,6 +135,13 @@ version = "0.1.0"
 
 [[package]]
 name = "shout"
+version = "0.1.0"
+dependencies = [
+ "userlib",
+]
+
+[[package]]
+name = "terminal"
 version = "0.1.0"
 dependencies = [
  "userlib",

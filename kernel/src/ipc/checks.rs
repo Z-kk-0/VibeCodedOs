@@ -1,21 +1,22 @@
 //! Boot-time proof that user space can run itself (DECISIONS.md, 020, 021).
 //!
 //! The kernel starts exactly one program, `init`, and gives it the console,
-//! one `Program` handle per built-in program and one `Device` handle per
-//! device it found – today only the screen (DECISIONS.md, 023). Everything
+//! one `Program` handle per built-in program and the devices it found: the
+//! screen as a `Device` handle (DECISIONS.md, 023), the keyboard as its
+//! interrupt line and its two I/O ports (025). Everything
 //! else – which services run, who may talk to whom, who drives the screen,
 //! the checks that the ownership rules hold – is `init`'s business (see
 //! `programs/init`). The kernel only looks at the result: init exits with 0
 //! only if every check passed.
 
-use super::object::{Capability, Device, Memory, ProgramCapability};
+use super::object::{Capability, Device, Memory, Ports, ProgramCapability};
 use crate::programs;
 use crate::task::{Exit, core_count, sleep, spawn_program, task_count, wait};
 use boot_info::{Framebuffer, PixelFormat};
 use paging::Caching;
 
 /// In the order `init` expects them, after the console (handle 0).
-const PROGRAMS: [(&str, &[u8]); 10] = [
+const PROGRAMS: [(&str, &[u8]); 12] = [
     ("log", programs::LOG),
     ("dir", programs::DIRECTORY),
     ("shout", programs::SHOUT),
@@ -26,9 +27,19 @@ const PROGRAMS: [(&str, &[u8]); 10] = [
     ("intruder", programs::INTRUDER),
     ("display", programs::DISPLAY),
     ("paint", programs::PAINT),
+    ("keyboard", programs::KEYBOARD),
+    ("terminal", programs::TERMINAL),
 ];
 /// Services that keep running once init is done.
-const SERVICES: usize = 4; // log, dir, shout, display
+const SERVICES: usize = 6; // log, dir, shout, display, keyboard, terminal
+
+/// The PC keyboard controller (i8042): its interrupt and its data (0x60)
+/// and status/command (0x64) ports.
+pub const KEYBOARD_IRQ: u8 = 1;
+const KEYBOARD_PORTS: Ports = Ports {
+    first: 0x60,
+    mask: 1 << 0 | 1 << 4,
+};
 
 pub fn check(screen: Framebuffer) {
     let handles = core::iter::once(Capability::Console)
@@ -37,7 +48,11 @@ pub fn check(screen: Framebuffer) {
                 .iter()
                 .map(|&(name, image)| Capability::Program(ProgramCapability { name, image })),
         )
-        .chain(core::iter::once(screen_device(screen)));
+        .chain([
+            screen_device(screen),
+            Capability::Ports(KEYBOARD_PORTS),
+            Capability::Interrupt(KEYBOARD_IRQ),
+        ]);
     let init = spawn_program("init", programs::INIT, handles)
         .unwrap_or_else(|error| panic!("init: {error}"));
     let exit = wait(init);

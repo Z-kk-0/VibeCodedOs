@@ -19,3 +19,5 @@ program!(GIVER, "giver");
 program!(INTRUDER, "intruder");
 program!(DISPLAY, "display");
 program!(PAINT, "paint");
+program!(KEYBOARD, "keyboard");
+program!(TERMINAL, "terminal");

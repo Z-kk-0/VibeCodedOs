@@ -6,6 +6,7 @@ pub mod cpu;
 mod gdt;
 mod idt;
 mod interrupts;
+mod io_apic;
 mod per_core;
 mod pic;
 mod pit;
@@ -87,6 +88,18 @@ pub fn flush_kernel_pages_everywhere(start: u64, pages: u64) {
 /// After changing pages of an address space active on `cores`.
 pub fn flush_pages_on(cores: CoreSet, start: u64, pages: u64) {
     shootdown::flush_pages(cores, start, pages);
+}
+
+/// Masks every device interrupt line (ACPI tells where they are). Returns
+/// how many I/O APICs there are: 0 means no device interrupts at all.
+pub fn init_device_interrupts(acpi_root: u64) -> usize {
+    io_apic::init(acpi_root)
+}
+
+/// Lets ISA IRQ `irq` (0–15) through to the boot core; `false` if this
+/// machine can't (see `io_apic::route_isa`).
+pub fn route_isa_interrupt(irq: u8) -> bool {
+    io_apic::route_isa(irq)
 }
 
 /// How the local APICs are reached: "x2APIC" or "xAPIC".

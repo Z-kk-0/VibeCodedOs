@@ -183,7 +183,7 @@ fn control_registers() -> ControlRegisters {
 }
 
 /// ACPI tables, read through the physical memory window.
-struct AcpiMemory;
+pub(super) struct AcpiMemory;
 
 impl acpi::PhysicalMemory for AcpiMemory {
     fn bytes(&self, address: u64, length: usize) -> Option<&[u8]> {

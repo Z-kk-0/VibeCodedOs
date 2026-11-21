@@ -13,8 +13,14 @@
 //! moves the device handle away without ever opening it. `paint` draws
 //! through `display`.
 //!
-//! Handles: 0 = console, 1–10 = the programs log, dir, shout, vandal,
-//! hello, owner, giver, intruder, display, paint; 11 = the screen (device).
+//! The keyboard (DECISIONS.md, 025) works the same way: its interrupt and
+//! ports go to `keyboard` alone, which calls `terminal` with every key –
+//! through an endpoint init makes for just those two. The terminal starts
+//! only after paint is done, so its strip lands on top of the picture.
+//!
+//! Handles: 0 = console, 1–12 = the programs log, dir, shout, vandal,
+//! hello, owner, giver, intruder, display, paint, keyboard, terminal;
+//! 13 = the screen (device); 14, 15 = the keyboard's ports and interrupt.
 
 #![no_std]
 #![no_main]
@@ -34,7 +40,11 @@ const GIVER: Handle = Handle(7);
 const INTRUDER: Handle = Handle(8);
 const DISPLAY: Handle = Handle(9);
 const PAINT: Handle = Handle(10);
-const SCREEN: Handle = Handle(11);
+const KEYBOARD: Handle = Handle(11);
+const TERMINAL: Handle = Handle(12);
+const SCREEN: Handle = Handle(13);
+const KEYBOARD_PORTS: Handle = Handle(14);
+const KEYBOARD_INTERRUPT: Handle = Handle(15);
 /// The CPU exception the attackers must be stopped by.
 const PAGE_FAULT: u64 = 14;
 /// Handed to hello at its start, in a page of its own.
@@ -50,6 +60,8 @@ extern "C" fn _start() -> ! {
     let directory_for = |name| must(mint(directory, abi::badge_from_name(name)), 4);
     let vandal = must(endpoint_new(), 5);
     let vandal_for_owner = must(mint(vandal, abi::badge_from_name("owner")), 6);
+    let keys = must(endpoint_new(), 18);
+    let keys_for_keyboard = must(mint(keys, abi::badge_from_name("keyboard")), 19);
 
     let my_log = log_for("init");
     let [
@@ -62,8 +74,11 @@ extern "C" fn _start() -> ! {
         log_intruder,
         log_display,
         log_paint,
+        log_keyboard,
+        log_terminal,
     ] = [
         "dir", "shout", "vandal", "hello", "owner", "giver", "intruder", "display", "paint",
+        "keyboard", "terminal",
     ]
     .map(log_for);
     let [
@@ -72,7 +87,8 @@ extern "C" fn _start() -> ! {
         directory_giver,
         directory_display,
         directory_paint,
-    ] = ["shout", "owner", "giver", "display", "paint"].map(directory_for);
+        directory_terminal,
+    ] = ["shout", "owner", "giver", "display", "paint", "terminal"].map(directory_for);
 
     must(spawn(LOG, [Pass::Move(log), Pass::Move(CONSOLE)]), 7);
     set_log(my_log);
@@ -144,6 +160,30 @@ extern "C" fn _start() -> ! {
             failures += 1;
         }
     }
+    // The picture is on the screen: now the keyboard and the terminal.
+    must(
+        spawn(
+            TERMINAL,
+            [
+                Pass::Move(log_terminal),
+                Pass::Move(directory_terminal),
+                Pass::Move(keys),
+            ],
+        ),
+        20,
+    );
+    must(
+        spawn(
+            KEYBOARD,
+            [
+                Pass::Move(log_keyboard),
+                Pass::Move(KEYBOARD_PORTS),
+                Pass::Move(KEYBOARD_INTERRUPT),
+                Pass::Move(keys_for_keyboard),
+            ],
+        ),
+        21,
+    );
     if failures == 0 {
         println!("All {programs} programs ended as they should. The services keep running.");
     }
