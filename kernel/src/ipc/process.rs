@@ -2,9 +2,10 @@
 //! holds, and what it waits for (DECISIONS.md, 018, 020 and 021).
 
 use super::endpoint::Endpoint;
-use super::object::Capability;
+use super::object::{Capability, Mailbox};
 use crate::memory::AddressSpace;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use capability::{HandleTable, MappingArea};
 use paging::{Caching, Flags, PAGE_SIZE};
 use scheduling::TaskId;
@@ -18,17 +19,20 @@ pub struct Process {
     pub space: AddressSpace,
     pub handles: HandleTable<Capability>,
     area: MappingArea,
-    /// Set while the task is blocked somewhere it may be woken from by
-    /// something other than a reply: a queue (and maybe a deadline) or a
-    /// child it waits for. `None` while it waits for a reply: that only
-    /// ends with the reply or the reply handle's loss.
+    /// What the task waits for while it is blocked in a system call.
     pub waiting: Option<Waiting>,
+    /// Mailboxes to tell when this program ends (`send` to its `Child`).
+    pub watchers: Vec<Mailbox>,
     /// Its parent asked to stop it (DECISIONS.md, 026): it ends the next
     /// time it would return to user mode (`stop.rs`).
     pub stop_requested: bool,
 }
 
 pub enum Waiting {
+    /// A server took its call: only the reply, or the reply handle's loss,
+    /// ends this wait – no timeout does (DECISIONS.md, 021). Being stopped
+    /// does (027): the reply then finds nobody waiting and is dropped.
+    ForReply,
     InQueue {
         endpoint: Arc<Endpoint>,
         as_caller: bool,
@@ -52,6 +56,7 @@ impl Process {
             handles: HandleTable::new(),
             area: MappingArea::new(MAPPING_START, MAPPING_END, PAGE_SIZE),
             waiting: None,
+            watchers: Vec::new(),
             stop_requested: false,
         };
         for capability in handles {

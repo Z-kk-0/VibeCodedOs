@@ -1,6 +1,6 @@
 //! The memory system calls: making a memory object and giving a handle up.
 
-use super::delivery::{fail_reply, release_receiving_end};
+use super::delivery::destroy;
 use super::message::{Delivery, Received, write_error};
 use super::object::{self, Capability, OwnedMemory};
 use super::transfer::process;
@@ -26,7 +26,7 @@ pub fn memory_new(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
             .map_frames_aligned(&memory.frames(), true, memory.caching(), align)
             .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
         let handle = process.handles.insert(Capability::Memory(OwnedMemory {
-            memory,
+            memory: alloc::sync::Arc::new(memory),
             address,
             lent: false,
         }));
@@ -41,6 +41,7 @@ pub fn memory_new(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) {
             words: [0; 4],
             received,
             reply: None,
+            status: None,
         }
         .write_to(frame),
         Err(error) => write_error(frame, error),
@@ -73,11 +74,8 @@ pub fn drop_handle(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) 
             Ok(removed)
         });
     let status = removed_status(&removed);
-    match removed {
-        Ok(Capability::Reply(reply)) => fail_reply(tasks, reply, abi::ERROR_PEER_GONE),
-        Ok(Capability::Endpoint(end)) if end.can_receive => release_receiving_end(tasks, end),
-        Ok(Capability::Child(child)) => crate::task::forget_exit(child),
-        _ => {}
+    if let Ok(removed) = removed {
+        destroy(tasks, removed);
     }
     write_error(frame, status);
 }
@@ -113,6 +111,7 @@ pub fn memory_info(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) 
                 memory: Some(memory),
             },
             reply: None,
+            status: None,
         }
         .write_to(frame),
         Err(error) => write_error(frame, error),

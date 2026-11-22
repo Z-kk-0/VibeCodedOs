@@ -54,8 +54,11 @@ pub struct Delivery {
     pub badge: u64,
     pub words: [u64; 4],
     pub received: Received,
-    /// For `receive`: the handle to answer with.
+    /// For `receive`: the handle to answer a call with; `None` for an answer.
     pub reply: Option<Handle>,
+    /// For `receive`: an answer's status (0 for calls). `None` elsewhere –
+    /// then `r14` is left alone.
+    pub status: Option<u64>,
 }
 
 /// The handle that came with a message, if any.
@@ -79,6 +82,9 @@ impl Delivery {
         frame.rcx = pages | access << 32;
         [frame.r10, frame.r8, frame.r9, frame.r12] = self.words;
         frame.r13 = self.reply.map_or(abi::NO_HANDLE, |handle| handle.0);
+        if let Some(status) = self.status {
+            frame.r14 = status;
+        }
     }
 }
 

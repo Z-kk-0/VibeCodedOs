@@ -23,3 +23,4 @@ program!(KEYBOARD, "keyboard");
 program!(TERMINAL, "terminal");
 program!(SHELL, "shell");
 program!(COUNT, "count");
+program!(ASK, "ask");

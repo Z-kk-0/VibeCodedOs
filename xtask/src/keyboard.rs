@@ -68,7 +68,7 @@ pub fn steps() -> Vec<Step> {
         },
         Step {
             keys: keys_for("help"),
-            expected: output("Programs I may start: hello, count, intruder, giver, paint."),
+            expected: output("Programs I may start: hello, count, ask, intruder, giver, paint."),
             times: 1,
         },
         Step {
@@ -106,6 +106,32 @@ pub fn steps() -> Vec<Step> {
         Step {
             keys: [keys_for("count"), names(&["ctrl-c"])].concat(),
             expected: output("count was stopped."),
+            times: 1,
+        },
+        // Waiting for several things at once (DECISIONS 027): a job's end
+        // is reported the moment it comes, with nothing typed.
+        Step {
+            keys: keys_for("count 2 &"),
+            expected: output("[2] count runs in the background."),
+            times: 1,
+        },
+        shown("[2] count ended: exit code 0."),
+        // Ctrl+C stops even a program that waits for a reply (the terminal
+        // answers `ask` only when Enter is pressed) – and the next line
+        // goes to the shell, not to the program that is gone.
+        Step {
+            keys: keys_for("ask"),
+            expected: output("What is your name?"),
+            times: 1,
+        },
+        Step {
+            keys: names(&["ctrl-c"]),
+            expected: output("ask was stopped."),
+            times: 1,
+        },
+        Step {
+            keys: keys_for("jobs"),
+            expected: output("No jobs in the background."),
             times: 1,
         },
     ]

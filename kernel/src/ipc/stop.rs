@@ -3,11 +3,12 @@
 //! ends it at a moment where nothing is half done.
 //!
 //! That moment is the next time the program would return to user mode.
-//! Everything it waits for that can be cut short anyway (a queue, a child,
-//! an interrupt, sleeping) is cut short now, as a timeout would. A program
-//! waiting for a *reply* is left to wait: a server may hold memory it lent,
-//! and pulling that away mid-work is exactly what lending promises not to
-//! do. It ends right after the reply came.
+//! Whatever it waits for is cut short now: a queue, a child, an interrupt,
+//! sleeping – and a reply (DECISIONS.md, 027). A server may be working on
+//! memory the program lent it; it keeps working on it undisturbed, since
+//! the borrow keeps the memory alive by itself (`lending.rs`). When the
+//! server replies, nobody is waiting anymore: the reply is dropped and the
+//! memory freed.
 
 use super::delivery::fail_call;
 use super::interrupt;
@@ -38,13 +39,16 @@ pub fn request(tasks: &mut Tasks, child: TaskId) {
     }
 }
 
-/// Wakes a blocked program, unless it waits for a reply.
+/// Wakes a blocked program from whatever it waits for.
 fn cancel_wait(tasks: &mut Tasks, child: TaskId) {
     let Ok(program) = process(tasks, child) else {
         return;
     };
     let cancelled = match &program.waiting {
-        None => false, // waits for a reply
+        None => false,
+        // The server keeps the reply handle and any memory lent with the
+        // call (the borrow keeps it alive); its reply will find nobody.
+        Some(Waiting::ForReply) => true,
         Some(Waiting::InQueue {
             endpoint,
             as_caller: true,

@@ -42,6 +42,7 @@ pub fn access(ports: Ports, message: &Message, frame: &mut InterruptFrame) {
             words,
             received: Received::default(),
             reply: None,
+            status: None,
         }
         .write_to(frame),
         Err(error) => write_error(frame, error),

@@ -4,14 +4,17 @@
 //!   memory back and `ERROR_PEER_GONE`;
 //! - its receiving ends are released – an endpoint left without any is
 //!   closed, and its waiting callers learn it at once;
-//! - whoever waits for it as a child is told how it ended.
+//! - whoever waits for it as a child is told how it ended – blocked in
+//!   `call`, or with an answer in a mailbox (`send`, DECISIONS.md, 027).
 //!
-//! Its memory is freed later, together with the task (`Process::drop`).
+//! Memory it lent stays where it is until the borrow ends (`lending.rs`).
+//! The rest of its memory is freed later, together with the task
+//! (`Process::drop`).
 
-use super::delivery::{fail_reply, release_receiving_end, saved_frame};
+use super::delivery::{fail_reply, post, release_receiving_end, saved_frame};
 use super::object::Capability;
 use super::process::Waiting;
-use super::spawn::write_exit;
+use super::spawn::{exit_answer, write_exit};
 use super::stop;
 use super::transfer::process;
 use crate::task::{Exit, Tasks};
@@ -23,6 +26,7 @@ pub fn on_exit(tasks: &mut Tasks, core: CoreId, exit: Exit) {
         return; // a kernel task
     };
     stop::ended(dying.stop_requested);
+    let watchers = core::mem::take(&mut dying.watchers);
     let promises = dying.handles.extract(|capability| {
         matches!(capability, Capability::Reply(_)) || capability.is_receiving_end()
     });
@@ -32,6 +36,9 @@ pub fn on_exit(tasks: &mut Tasks, core: CoreId, exit: Exit) {
             Capability::Endpoint(end) => release_receiving_end(tasks, end),
             _ => unreachable!("extracted only those two"),
         }
+    }
+    for watcher in watchers {
+        post(tasks, &watcher, exit_answer(watcher.tag, exit));
     }
     for waiter in tasks.ids() {
         let waits_for_me = process(tasks, waiter).is_ok_and(

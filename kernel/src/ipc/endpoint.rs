@@ -1,12 +1,19 @@
 //! Endpoints: where servers wait for messages and callers for servers
-//! (DECISIONS.md, 020 and 021).
+//! (DECISIONS.md, 020, 021 and 027).
+//!
+//! What waits in an endpoint's queue is either a call – from a caller
+//! blocked in `call`, or one that `send` left and went on – or an answer:
+//! the reply to a `send` whose mailbox this endpoint is, a child's end, a
+//! device interrupt. They come out in the order they went in.
 //!
 //! An endpoint also remembers how many receiving ends exist – when the last
 //! one is gone, nobody can ever answer, so it closes and every waiting
 //! caller learns it at once – and, per badge, a generation: revoking a
 //! badge bumps it, which kills every sending end minted with the old one.
 
-use super::message::Message;
+use super::message::Attachment;
+use super::object::Caller;
+use super::transfer::Carried;
 use crate::sync::SpinLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -22,19 +29,50 @@ pub struct Endpoint {
 #[derive(Default)]
 struct State {
     receivers: VecDeque<TaskId>,
-    callers: VecDeque<WaitingCall>,
+    queue: VecDeque<Queued>,
     receiving_ends: usize,
     closed: bool,
     /// Badges that were revoked, with how often; absent means 0.
     generations: BTreeMap<u64, u64>,
 }
 
-/// A caller waiting for a receiver. The attachment is still the caller's:
-/// it changes hands only when the message is delivered.
+/// What waits for a receiver.
+pub enum Queued {
+    Call(WaitingCall),
+    Answer(Answer),
+}
+
+/// A call waiting for a receiver.
 pub struct WaitingCall {
-    pub caller: TaskId,
+    pub caller: Caller,
     pub badge: u64,
-    pub message: Message,
+    pub words: [u64; 4],
+    /// From `call`: the attachment is still the caller's – the caller is
+    /// blocked, and it changes hands only when the message is delivered.
+    pub attachment: Option<Attachment>,
+    /// From `send`: the sender runs on, so what it attached was taken from
+    /// it at once and waits here.
+    pub carried: Option<Carried>,
+}
+
+/// An answer for whoever receives on a mailbox: no reply handle comes with
+/// it, and its status says whether what it answers went well.
+pub struct Answer {
+    pub tag: u64,
+    pub status: u64,
+    pub words: [u64; 4],
+    pub carried: Option<Carried>,
+}
+
+impl Answer {
+    pub fn failed(tag: u64, status: u64) -> Self {
+        Self {
+            tag,
+            status,
+            words: [0; 4],
+            carried: None,
+        }
+    }
 }
 
 impl Endpoint {
@@ -49,15 +87,16 @@ impl Endpoint {
     }
 
     /// A receiving end is gone. If it was the last, the endpoint closes and
-    /// the callers still waiting are returned – they must be told.
-    pub fn release_receiving_end(&self) -> Vec<WaitingCall> {
+    /// everything still queued is returned – callers must be told, and what
+    /// answers carry must be given up.
+    pub fn release_receiving_end(&self) -> Vec<Queued> {
         let mut state = self.state.lock();
         state.receiving_ends -= 1;
         if state.receiving_ends > 0 {
             return Vec::new();
         }
         state.closed = true;
-        state.callers.drain(..).collect()
+        state.queue.drain(..).collect()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -99,17 +138,28 @@ impl Endpoint {
     }
 
     pub fn push_caller(&self, call: WaitingCall) {
-        self.state.lock().callers.push_back(call);
+        self.state.lock().queue.push_back(Queued::Call(call));
     }
 
-    pub fn pop_caller(&self) -> Option<WaitingCall> {
-        self.state.lock().callers.pop_front()
+    pub fn push_answer(&self, answer: Answer) {
+        self.state.lock().queue.push_back(Queued::Answer(answer));
     }
 
-    /// For a caller that stops waiting (timeout).
+    pub fn pop(&self) -> Option<Queued> {
+        self.state.lock().queue.pop_front()
+    }
+
+    /// For a caller blocked in `call` that stops waiting (timeout, stop).
+    /// What `send` left stays: its sender isn't waiting for it.
     pub fn remove_caller(&self, task: TaskId) -> Option<WaitingCall> {
         let mut state = self.state.lock();
-        let index = state.callers.iter().position(|call| call.caller == task)?;
-        state.callers.remove(index)
+        let index = state.queue.iter().position(|queued| {
+            matches!(queued, Queued::Call(call)
+                if call.caller.task == task && call.caller.answer_to.is_none())
+        })?;
+        match state.queue.remove(index) {
+            Some(Queued::Call(call)) => Some(call),
+            _ => unreachable!("found above"),
+        }
     }
 }

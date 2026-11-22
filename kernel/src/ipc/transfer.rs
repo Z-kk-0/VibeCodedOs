@@ -9,15 +9,24 @@
 //!
 //! Other objects can be moved (endpoints, the console, reply handles,
 //! programs, children); endpoints and programs can also be copied.
-//! Everything that can fail (mapping into the receiver) happens before the
-//! sender's side changes, so a failed transfer leaves both as they were.
+//!
+//! A `call`er is blocked until its message is delivered, so its attachment
+//! stays where it is until then (`transfer`): everything that can fail
+//! (mapping into the receiver) happens before the sender's side changes,
+//! and a failed transfer leaves both as they were. A `send`er runs on
+//! (027), so its attachment is taken from it at once and travels with the
+//! message (`carry`, then `unpack` at delivery); if delivery fails, what
+//! was moved is given up and what was lent goes back (`discard`).
 
-use super::lending::take_from_sender;
+use super::delivery::destroy;
+use super::lending::{give_back, restrict_lender, take_from_sender, take_moved};
 use super::message::{Attachment, Mode, Received};
-use super::object::{Capability, Lend};
+use super::object::{BorrowedMemory, Capability, Lend, Memory, OwnedMemory};
 use super::process::Process;
 use crate::task::Tasks;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use capability::Handle;
 use paging::Caching;
 use scheduling::TaskId;
 
@@ -40,6 +49,22 @@ enum Plan {
         caching: Caching,
         receiver_writable: bool,
         access: u64,
+    },
+}
+
+/// An attachment on its way: already gone from its sender, not yet with
+/// anyone else.
+pub enum Carried {
+    /// Moved or copied – anything but memory.
+    Handle(Capability),
+    /// Moved memory, unmapped from its sender.
+    Memory(Arc<Memory>),
+    /// Lent memory: the lender's mapping is restricted already.
+    Lent {
+        lender_task: TaskId,
+        lender: Handle,
+        memory: Arc<Memory>,
+        exclusive: bool,
     },
 }
 
@@ -130,7 +155,7 @@ pub fn give_to_child(
                 .expect("checked by plan()"),
             Plan::Copy(capability) => capability,
             Plan::Memory { frames, .. } => {
-                take_from_sender(parent, attachment, frames, address.expect("mapped above"))
+                take_from_sender(parent, attachment, frames, address.expect("mapped above")).0
             }
         };
         child.handles.insert(capability);
@@ -169,12 +194,13 @@ pub fn transfer(
         .map_frames(&frames, receiver_writable, caching)
         .ok_or(abi::ERROR_OUT_OF_MEMORY)?;
     let pages = frames.len() as u64;
-    let capability = take_from_sender(process(tasks, from)?, attachment, frames, address);
+    let (capability, lent) = take_from_sender(process(tasks, from)?, attachment, frames, address);
     let received = process(tasks, to)?.handles.insert(capability);
-    let lend = attachment.mode.is_lend().then_some(Lend {
+    let lend = lent.map(|memory| Lend {
         lender: handle,
         borrower_task: to,
         borrower: received,
+        memory,
     });
     Ok((
         Received {
@@ -183,6 +209,132 @@ pub fn transfer(
         },
         lend,
     ))
+}
+
+/// Takes the attachment from task `from` (checked by `check` already) to
+/// travel with a message.
+pub fn carry(
+    tasks: &mut Tasks,
+    from: TaskId,
+    attachment: Attachment,
+    phase: Phase,
+) -> Result<Carried, u64> {
+    let sender = process(tasks, from)?;
+    let handle = attachment.handle;
+    Ok(match plan(sender, attachment, phase)? {
+        Plan::Move => Carried::Handle(sender.handles.remove(handle).expect("checked by plan()")),
+        Plan::Copy(capability) => Carried::Handle(capability),
+        Plan::Memory { .. } if attachment.mode == Mode::Move => {
+            Carried::Memory(take_moved(sender, handle))
+        }
+        Plan::Memory { .. } => {
+            let exclusive = attachment.mode == Mode::LendExclusive;
+            Carried::Lent {
+                lender_task: from,
+                lender: handle,
+                memory: restrict_lender(sender, handle, exclusive).0,
+                exclusive,
+            }
+        }
+    })
+}
+
+/// Delivers what `carry` took to task `to`. On failure (no room to map it)
+/// the attachment comes back, still on its way.
+pub fn unpack(
+    tasks: &mut Tasks,
+    to: TaskId,
+    carried: Carried,
+) -> Result<(Received, Option<Lend>), (u64, Carried)> {
+    let Ok(receiver) = process(tasks, to) else {
+        return Err((abi::ERROR_PEER_GONE, carried));
+    };
+    let carried = match carried {
+        Carried::Handle(capability) => {
+            let handle = receiver.handles.insert(capability);
+            let received = Received {
+                handle: Some(handle),
+                memory: None,
+            };
+            return Ok((received, None));
+        }
+        memory => memory,
+    };
+    let (frames, caching, writable) = match &carried {
+        Carried::Memory(memory) => (memory.frames(), memory.caching(), true),
+        Carried::Lent {
+            memory, exclusive, ..
+        } => (memory.frames(), memory.caching(), *exclusive),
+        Carried::Handle(_) => unreachable!("returned above"),
+    };
+    let Some(address) = receiver.map_frames(&frames, writable, caching) else {
+        return Err((abi::ERROR_OUT_OF_MEMORY, carried));
+    };
+    let pages = frames.len() as u64;
+    let (capability, access, lend) = match carried {
+        Carried::Memory(memory) => {
+            let owned = OwnedMemory {
+                memory,
+                address,
+                lent: false,
+            };
+            (Capability::Memory(owned), abi::ACCESS_OWNED, None)
+        }
+        Carried::Lent {
+            lender,
+            memory,
+            exclusive,
+            ..
+        } => {
+            let access = if exclusive {
+                abi::ACCESS_EXCLUSIVE
+            } else {
+                abi::ACCESS_SHARED
+            };
+            let borrowed = BorrowedMemory {
+                frames,
+                address,
+                access,
+                caching,
+            };
+            (
+                Capability::Borrowed(borrowed),
+                access,
+                Some((lender, memory)),
+            )
+        }
+        Carried::Handle(_) => unreachable!("returned above"),
+    };
+    let handle = receiver.handles.insert(capability);
+    let lend = lend.map(|(lender, memory)| Lend {
+        lender,
+        borrower_task: to,
+        borrower: handle,
+        memory,
+    });
+    let received = Received {
+        handle: Some(handle),
+        memory: Some((address, pages, access)),
+    };
+    Ok((received, lend))
+}
+
+/// An attachment that will never arrive: moved things are given up as a
+/// `drop` would, lent memory goes back to its lender.
+pub fn discard(tasks: &mut Tasks, carried: Carried) {
+    match carried {
+        Carried::Handle(capability) => destroy(tasks, capability),
+        Carried::Memory(memory) => drop(memory), // unmapped already
+        Carried::Lent {
+            lender_task,
+            lender,
+            memory,
+            ..
+        } => {
+            give_back(tasks, lender_task, lender);
+            drop(memory);
+        }
+    }
 }
 
 fn give(tasks: &mut Tasks, to: TaskId, capability: Capability) -> Result<Received, u64> {

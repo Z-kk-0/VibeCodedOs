@@ -1,10 +1,13 @@
-//! Capabilities and ownership IPC (DECISIONS.md, 012, 020 and 021).
+//! Capabilities and ownership IPC (DECISIONS.md, 012, 020, 021 and 027).
 //!
-//! A program can only use what it holds a handle to. Talking is a
-//! synchronous `call` to an endpoint: the caller blocks until a receiver
-//! answers through the reply handle that came with the message. A message
-//! is four words plus at most one handle; data only travels as memory
-//! objects that are moved or lent (`transfer.rs`).
+//! A program can only use what it holds a handle to. Talking is a `call`
+//! to an endpoint: the caller blocks until a receiver answers through the
+//! reply handle that came with the message. Or it is a `send`: the same
+//! call, but the sender runs on, and the answer arrives later as a message
+//! in its mailbox – an endpoint it receives on, next to answers from
+//! anything else it waits for. A message is four words plus at most one
+//! handle; data only travels as memory objects that are moved or lent
+//! (`transfer.rs`).
 //!
 //! Every operation runs with the scheduler lock held (`task::with_tasks`),
 //! because it touches several tasks at once – caller, receiver, their
@@ -46,12 +49,13 @@ pub use timeouts::expire_timeouts;
 use crate::arch::InterruptFrame;
 use crate::task::Tasks;
 use capability::Handle;
-use delivery::{block, deliver, fail_call, saved_frame};
-use endpoint::WaitingCall;
+use delivery::{block, deliver, fail_call, fail_caller, saved_frame, write_answer};
+use endpoint::{Endpoint, Queued, WaitingCall};
 use message::{Message, write_error};
+use object::{Caller, Mailbox};
 use process::Waiting;
-use scheduling::{CoreId, State};
-use transfer::{Phase, process};
+use scheduling::{CoreId, State, TaskId};
+use transfer::{Phase, carry, process};
 
 /// What the system call does next.
 pub enum Next {
@@ -117,9 +121,11 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
     }
 
     let call = WaitingCall {
-        caller: me,
+        caller: Caller::waiting(me),
         badge: endpoint.badge,
-        message,
+        words: message.words,
+        attachment: message.attachment,
+        carried: None,
     };
     // From now on the reply may come from another core at any moment, so
     // the frame it will be written into must be known first.
@@ -144,29 +150,102 @@ pub fn call(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next
     Next::Block
 }
 
+/// `send(object, attachment, words, mailbox, tag)`: a `call` that doesn't
+/// wait (DECISIONS.md, 027). The answer – the reply, or why there is none –
+/// arrives in `mailbox` (a receiving end of ours) tagged with `tag`. What
+/// is attached leaves us now: moved things at once, lent memory is ours
+/// again with the answer. Endpoints take sends, and so do the things one
+/// waits for: a child (`CHILD_WAIT`) and an interrupt line. Objects that
+/// answer at once are used with `call`.
+pub fn send(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next {
+    let me = tasks.current_id(core);
+    let status = send_message(tasks, me, frame).err().unwrap_or(0);
+    fail_now(frame, status)
+}
+
+fn send_message(tasks: &mut Tasks, me: TaskId, frame: &InterruptFrame) -> Result<(), u64> {
+    let message = Message::from_frame(frame)?;
+    let process = process(tasks, me).map_err(|_| abi::ERROR_WRONG_KIND)?;
+    let mailbox = match process.handles.get(Handle(frame.rcx)) {
+        Some(Capability::Endpoint(end)) if end.can_receive => Mailbox {
+            endpoint: end.endpoint.clone(),
+            tag: frame.r13,
+        },
+        Some(_) => return Err(abi::ERROR_WRONG_KIND),
+        None => return Err(abi::ERROR_BAD_HANDLE),
+    };
+    let endpoint = match process.handles.get(Handle(frame.rdi)) {
+        Some(&Capability::Child(child)) if message.attachment.is_none() => {
+            return spawn::child_send(tasks, child, &message, mailbox);
+        }
+        Some(&Capability::Interrupt(irq)) if message.attachment.is_none() => {
+            interrupt::watch(tasks, irq, mailbox);
+            return Ok(());
+        }
+        Some(Capability::Endpoint(endpoint)) if endpoint.is_revoked() => {
+            return Err(abi::ERROR_REVOKED);
+        }
+        Some(Capability::Endpoint(endpoint)) => endpoint.clone(),
+        Some(_) => return Err(abi::ERROR_WRONG_KIND),
+        None => return Err(abi::ERROR_BAD_HANDLE),
+    };
+    if endpoint.endpoint.is_closed() {
+        return Err(abi::ERROR_PEER_GONE);
+    }
+    let carried = match message.attachment {
+        Some(attachment) => {
+            transfer::check(process, attachment, Phase::Call)?;
+            Some(carry(tasks, me, attachment, Phase::Call)?)
+        }
+        None => None,
+    };
+    let caller = Caller {
+        task: me,
+        answer_to: Some(mailbox),
+    };
+    let call = WaitingCall {
+        caller,
+        badge: endpoint.badge,
+        words: message.words,
+        attachment: None,
+        carried,
+    };
+    match endpoint.endpoint.pop_receiver() {
+        Some(receiver) => {
+            let receiver_frame = saved_frame(tasks, receiver);
+            match deliver(tasks, call, receiver, receiver_frame) {
+                Ok(()) => tasks.set_state(receiver, State::Ready),
+                Err((error, caller)) => {
+                    // The receiver keeps waiting; the failure is an answer.
+                    endpoint.endpoint.return_receiver(receiver);
+                    fail_caller(tasks, &caller, error);
+                }
+            }
+        }
+        None => endpoint.endpoint.push_caller(call),
+    }
+    Ok(())
+}
+
 /// `receive(endpoint, timeout)`.
 pub fn receive(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> Next {
     let me = tasks.current_id(core);
-    let endpoint = match process(tasks, me) {
-        Err(_) => Err(abi::ERROR_WRONG_KIND),
-        Ok(process) => match process.handles.get(Handle(frame.rdi)) {
-            Some(Capability::Endpoint(endpoint)) if endpoint.can_receive => {
-                Ok(endpoint.endpoint.clone())
-            }
-            Some(_) => Err(abi::ERROR_WRONG_KIND),
-            None => Err(abi::ERROR_BAD_HANDLE),
-        },
-    };
-    let endpoint = match endpoint {
+    let endpoint = match receiving_end(tasks, me, frame.rdi) {
         Ok(endpoint) => endpoint,
         Err(error) => return fail_now(frame, error),
     };
-    while let Some(call) = endpoint.pop_caller() {
-        match deliver(tasks, call, me, frame) {
-            Ok(()) => return Next::Continue,
-            // Delivery failed (out of memory): that caller learns why, and
-            // we try the next one.
-            Err((error, caller)) => fail_call(tasks, caller, error),
+    while let Some(queued) = endpoint.pop() {
+        match queued {
+            Queued::Answer(answer) => {
+                write_answer(tasks, me, frame, answer);
+                return Next::Continue;
+            }
+            Queued::Call(call) => match deliver(tasks, call, me, frame) {
+                Ok(()) => return Next::Continue,
+                // Delivery failed (out of memory): that caller learns why,
+                // and we try the next one.
+                Err((error, caller)) => fail_caller(tasks, &caller, error),
+            },
         }
     }
     let waiting = Waiting::InQueue {
@@ -177,6 +256,21 @@ pub fn receive(tasks: &mut Tasks, core: CoreId, frame: &mut InterruptFrame) -> N
     block(tasks, core, frame, Some(waiting));
     endpoint.push_receiver(me);
     Next::Block
+}
+
+fn receiving_end(
+    tasks: &mut Tasks,
+    me: TaskId,
+    handle: u64,
+) -> Result<alloc::sync::Arc<Endpoint>, u64> {
+    let process = process(tasks, me).map_err(|_| abi::ERROR_WRONG_KIND)?;
+    match process.handles.get(Handle(handle)) {
+        Some(Capability::Endpoint(endpoint)) if endpoint.can_receive => {
+            Ok(endpoint.endpoint.clone())
+        }
+        Some(_) => Err(abi::ERROR_WRONG_KIND),
+        None => Err(abi::ERROR_BAD_HANDLE),
+    }
 }
 
 /// Writes `status` (0 = success) and lets the task continue.

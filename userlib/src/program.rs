@@ -1,6 +1,7 @@
-//! Starting programs and waiting for them (DECISIONS.md, 021, 022).
+//! Starting programs and waiting for them (DECISIONS.md, 021, 022, 027).
 
 use crate::ipc::{Attach, Error, Handle, call, call_timeout};
+use crate::mailbox::{Mailbox, Pending, Send};
 use crate::memory::Memory;
 
 /// How a handle goes to a new program.
@@ -60,13 +61,13 @@ pub fn wait(child: Handle) -> Result<Ended, Error> {
 /// `ERROR_TIMED_OUT` if it is still running.
 pub fn wait_timeout(child: Handle, ticks: u64) -> Result<Ended, Error> {
     let reply = call_timeout(child, Attach::Nothing, [abi::CHILD_WAIT, 0, 0, 0], ticks)?;
-    Ok(ended(reply.words))
+    Ok(Ended::from_words(reply.words))
 }
 
 /// How the child ended, if it has – without waiting.
 pub fn poll(child: Handle) -> Result<Option<Ended>, Error> {
     match call(child, Attach::Nothing, [abi::CHILD_POLL, 0, 0, 0]) {
-        Ok(reply) => Ok(Some(ended(reply.words))),
+        Ok(reply) => Ok(Some(Ended::from_words(reply.words))),
         Err(Error(abi::ERROR_TIMED_OUT)) => Ok(None),
         Err(error) => Err(error),
     }
@@ -78,11 +79,26 @@ pub fn stop(child: Handle) -> Result<(), Error> {
     call(child, Attach::Nothing, [abi::CHILD_STOP, 0, 0, 0]).map(|_| ())
 }
 
-fn ended(words: [u64; 4]) -> Ended {
-    match words[0] {
-        abi::CHILD_EXITED => Ended::Exited(words[1]),
-        abi::CHILD_KERNEL_FAILED => Ended::KernelFailed(words[1]),
-        abi::CHILD_STOPPED => Ended::Stopped,
-        _ => Ended::Killed(words[1]),
+/// Asks for word of the child's end in `mailbox`: the answer (tag `tag`)
+/// comes when it has ended – at once if it has already. Read it with
+/// `Ended::from_words`.
+pub fn watch(child: Handle, mailbox: &Mailbox, tag: u64) -> Result<(), Error> {
+    let words = [abi::CHILD_WAIT, 0, 0, 0];
+    let pending: Pending = mailbox
+        .send(child, Send::Nothing, words, tag)
+        .map_err(|refused| refused.error)?;
+    let _ = pending.finish(); // nothing was lent
+    Ok(())
+}
+
+impl Ended {
+    /// How it ended, from the words of the reply (or answer) to a wait.
+    pub fn from_words(words: [u64; 4]) -> Self {
+        match words[0] {
+            abi::CHILD_EXITED => Self::Exited(words[1]),
+            abi::CHILD_KERNEL_FAILED => Self::KernelFailed(words[1]),
+            abi::CHILD_STOPPED => Self::Stopped,
+            _ => Self::Killed(words[1]),
+        }
     }
 }

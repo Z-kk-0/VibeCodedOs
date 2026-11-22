@@ -1,0 +1,8 @@
+[package]
+name = "ask"
+version = "0.1.0"
+edition = "2024"
+description = "Asks for a line and waits for it - a program to stop while it waits for a reply"
+
+[dependencies]
+userlib = { path = "../../userlib" }

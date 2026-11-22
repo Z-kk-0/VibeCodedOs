@@ -19,6 +19,7 @@ pub fn handle(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         abi::CALL => task::with_tasks(|tasks, core| ipc::call(tasks, core, frame)),
         abi::RECEIVE => task::with_tasks(|tasks, core| ipc::receive(tasks, core, frame)),
         abi::REPLY => task::with_tasks(|tasks, core| ipc::reply(tasks, core, frame)),
+        abi::SEND => task::with_tasks(|tasks, core| ipc::send(tasks, core, frame)),
         abi::MEMORY_NEW => {
             task::with_tasks(|tasks, core| ipc::memory_new(tasks, core, frame));
             Next::Continue

@@ -51,7 +51,7 @@ fn open_in(process: &mut Process, handle: Handle, message: &Message) -> Result<D
     };
     let memory = device.memory.take().expect("checked above");
     *slot = Capability::Memory(OwnedMemory {
-        memory,
+        memory: alloc::sync::Arc::new(memory),
         address,
         lent: false,
     });
@@ -63,5 +63,6 @@ fn open_in(process: &mut Process, handle: Handle, message: &Message) -> Result<D
             memory: Some((address, frames.len() as u64, abi::ACCESS_OWNED)),
         },
         reply: None,
+        status: None,
     })
 }

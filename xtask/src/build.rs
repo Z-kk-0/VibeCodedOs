@@ -12,7 +12,7 @@ pub const LOADER_TARGET: &str = "x86_64-unknown-uefi";
 /// User programs run on the bare CPU just like the kernel.
 pub const PROGRAM_TARGET: &str = KERNEL_TARGET;
 /// Every crate in `programs/`; each is embedded into the kernel.
-pub const PROGRAMS: [&str; 15] = [
+pub const PROGRAMS: [&str; 16] = [
     "init",
     "log",
     "directory",
@@ -28,6 +28,7 @@ pub const PROGRAMS: [&str; 15] = [
     "terminal",
     "shell",
     "count",
+    "ask",
 ];
 
 /// Builds everything and returns the boot partition folder (`build/esp`).

@@ -89,10 +89,12 @@ impl EndpointCapability {
 }
 
 pub struct OwnedMemory {
-    pub memory: Memory,
+    /// Shared only with a borrow of it (`Lend`): if the owner ends while
+    /// its memory is lent, the frames live on until the borrow ends.
+    pub memory: Arc<Memory>,
     /// Where it's mapped in the owner's address space.
     pub address: u64,
-    /// Lent out right now (the owner waits in `call` for the reply).
+    /// Lent out right now – until the reply to the call it went with.
     pub lent: bool,
 }
 
@@ -107,18 +109,45 @@ pub struct BorrowedMemory {
 }
 
 pub struct ReplyCapability {
-    pub caller: TaskId,
+    pub caller: Caller,
     pub lend: Option<Lend>,
 }
 
+/// Who made a call, and where its answer goes: into its registers while it
+/// waits in `call`, or – for `send` – into its mailbox (DECISIONS.md, 027).
+#[derive(Clone)]
+pub struct Caller {
+    pub task: TaskId,
+    pub answer_to: Option<Mailbox>,
+}
+
+impl Caller {
+    /// A caller blocked in `call`.
+    pub fn waiting(task: TaskId) -> Self {
+        Self {
+            task,
+            answer_to: None,
+        }
+    }
+}
+
+/// Where the answer to a `send` arrives: an endpoint the sender can
+/// receive on, and the tag it chose to recognise the answer by.
+#[derive(Clone)]
+pub struct Mailbox {
+    pub endpoint: Arc<Endpoint>,
+    pub tag: u64,
+}
+
 /// A borrow that ends with the reply – or when the reply handle is gone.
-#[derive(Clone, Copy)]
 pub struct Lend {
     /// The owner's handle (in the caller).
     pub lender: Handle,
     /// Who holds the borrowed memory, and under which handle.
     pub borrower_task: TaskId,
     pub borrower: Handle,
+    /// Keeps the frames alive should the lender end before the borrow does.
+    pub memory: Arc<Memory>,
 }
 
 /// Up to 64 I/O ports near each other: `first + n` for every bit `n` set in

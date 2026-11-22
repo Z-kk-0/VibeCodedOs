@@ -15,9 +15,10 @@
 //! handles and schedules the child.
 
 use super::console::lent_bytes;
-use super::delivery::block;
+use super::delivery::{block, post};
+use super::endpoint::Answer;
 use super::message::{Attachment, Message, Mode, write_error, write_handle};
-use super::object::{Capability, ProgramCapability};
+use super::object::{Capability, Mailbox, ProgramCapability};
 use super::process::Waiting;
 use super::transfer::{self, Phase, give_to_child, process};
 use super::{Next, fail_now, stop, timeouts};
@@ -165,14 +166,51 @@ pub fn child_call(
     }
 }
 
+/// `send(child, [CHILD_WAIT, ..], mailbox)`: the answer comes when the
+/// child has ended – at once, if it has already (DECISIONS.md, 027).
+pub fn child_send(
+    tasks: &mut Tasks,
+    child: TaskId,
+    message: &Message,
+    mailbox: Mailbox,
+) -> Result<(), u64> {
+    if message.words[0] != abi::CHILD_WAIT {
+        return Err(abi::ERROR_BAD_ARGUMENT); // the others answer at once: `call`
+    }
+    if let Some(exit) = task::exit_of(child) {
+        let answer = exit_answer(mailbox.tag, exit);
+        post(tasks, &mailbox, answer);
+        return Ok(());
+    }
+    // No record yet, so it still runs: its end and the record are one step
+    // under the scheduler lock, which we hold.
+    let program = process(tasks, child).map_err(|_| abi::ERROR_PEER_GONE)?;
+    program.watchers.push(mailbox);
+    Ok(())
+}
+
 /// The reply to `call(child)`: word 0 how it ended, word 1 code or exception.
 pub fn write_exit(frame: &mut InterruptFrame, exit: Exit) {
     write_error(frame, 0);
-    (frame.r10, frame.r8) = match exit {
+    [frame.r10, frame.r8, frame.r9, frame.r12] = exit_words(exit);
+}
+
+/// The same, as an answer to `send(child)`.
+pub fn exit_answer(tag: u64, exit: Exit) -> Answer {
+    Answer {
+        tag,
+        status: 0,
+        words: exit_words(exit),
+        carried: None,
+    }
+}
+
+fn exit_words(exit: Exit) -> [u64; 4] {
+    let (how, detail) = match exit {
         Exit::Code(code) => (abi::CHILD_EXITED, code),
         Exit::Killed(vector) => (abi::CHILD_KILLED, vector),
         Exit::KernelFailed(cause) => (abi::CHILD_KERNEL_FAILED, cause),
         Exit::Stopped => (abi::CHILD_STOPPED, 0),
     };
-    (frame.r9, frame.r12) = (0, 0);
+    [how, detail, 0, 0]
 }

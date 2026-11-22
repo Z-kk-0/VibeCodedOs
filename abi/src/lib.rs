@@ -10,15 +10,20 @@
 //! attached handle. Data never travels inside a message – it travels as a
 //! `Memory` object that is moved or lent.
 //!
-//! | Register | `call` / `reply` in            | `call` / `receive` out            |
+//! | Register | `call` / `send` / `reply` in   | `call` / `receive` out            |
 //! |----------|--------------------------------|-----------------------------------|
 //! | `rax`    | call number                    | status: 0 or an `ERROR_*`         |
-//! | `rdi`    | endpoint / reply handle        | badge of the sender's handle      |
+//! | `rdi`    | endpoint / reply handle        | badge of the sender's handle (answer: its tag) |
 //! | `rsi`    | attached handle or `NO_HANDLE` | received handle or `NO_HANDLE`    |
 //! | `rdx`    | `ATTACH_*` mode                | address of received memory or 0   |
-//! | `rcx`    | timeout in ticks, 0 = none     | its page count + `ACCESS_*` << 32 |
+//! | `rcx`    | timeout in ticks, 0 = none; `send`: the mailbox | its page count + `ACCESS_*` << 32 |
 //! | `r10`, `r8`, `r9`, `r12` | message words 0–3 | message words 0–3             |
-//! | `r13`    | –                              | `receive`: the reply handle       |
+//! | `r13`    | `send`: the tag                | `receive`: the reply handle, `NO_HANDLE` for an answer |
+//! | `r14`    | –                              | `receive`: an answer's status (0 for a call) |
+//!
+//! `receive` brings two kinds of message (DECISIONS.md, 027): a *call*,
+//! with a reply handle, and an *answer* – the reply to a `send` whose
+//! mailbox this endpoint is, a child's end, an interrupt – without one.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -60,6 +65,16 @@ pub const REVOKE: u64 = 10;
 /// size and access (`rcx`, as for received memory). For memory a program
 /// got at its start, where no message told it the address.
 pub const MEMORY_INFO: u64 = 11;
+/// `send(object, attachment, words, mailbox, tag)` – a `call` that doesn't
+/// wait (DECISIONS.md, 027). Returns at once; the answer – the reply, or
+/// why there is none – arrives later in `mailbox` (`rcx`, a receiving end
+/// of ours) with `tag` (`r13`) in `rdi` and its status in `r14`. What is
+/// attached leaves the sender at once: moved things for good, lent memory
+/// until the answer (if the call fails, moved things are given up). Takes
+/// endpoints, children (`CHILD_WAIT`: the answer comes when the child has
+/// ended) and interrupts (the answer comes when the line fires). Objects
+/// that answer at once are used with `call`.
+pub const SEND: u64 = 12;
 
 /// "No handle" in handle registers.
 pub const NO_HANDLE: u64 = u64::MAX;
@@ -96,9 +111,9 @@ pub const SPAWN_ENTRY_SIZE: u64 = 16;
 ///   (0 = no limit), else `ERROR_TIMED_OUT`.
 /// - `CHILD_POLL`: answers at once: how it ended, or `ERROR_TIMED_OUT`.
 /// - `CHILD_STOP`: asks the kernel to end it (DECISIONS.md, 026); answers
-///   at once. The child ends the next time it would run in user mode – a
-///   child waiting for a reply only after the reply came. Waiting for it
-///   then says `CHILD_STOPPED`.
+///   at once. The child ends the next time it would run in user mode;
+///   whatever it waits for – a reply too (027) – is cut short. Waiting for
+///   it then says `CHILD_STOPPED`.
 ///
 /// When it has ended, reply word 0 says how, word 1 is the exit code or
 /// the CPU exception that stopped it.

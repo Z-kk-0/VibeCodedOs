@@ -22,6 +22,7 @@ pub mod font;
 pub mod interrupt;
 mod ipc;
 pub mod keyboard;
+mod mailbox;
 mod memory;
 mod message;
 pub mod ports;
@@ -36,10 +37,11 @@ pub use endpoint::{endpoint_new, mint, revoke};
 pub use ipc::{
     Attach, Error, Handle, call, call_timeout, drop_handle, receive, receive_timeout, reply,
 };
+pub use mailbox::{Answer, Incoming, Mailbox, Pending, Refused, Send};
 pub use memory::{Borrowed, Memory, ReceivedMemory};
 pub use message::{Received, Reply};
 pub use print::set_log;
-pub use program::{Ended, Pass, poll, spawn, stop, wait, wait_timeout};
+pub use program::{Ended, Pass, poll, spawn, stop, wait, wait_timeout, watch};
 
 /// The system call numbers and error codes, for programs that need them.
 pub use abi;

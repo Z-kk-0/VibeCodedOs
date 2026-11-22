@@ -1,19 +1,21 @@
 //! The terminal: a strip at the bottom of the screen with lines of text and
-//! the line being typed (DECISIONS.md, 025, 026). It serves three kinds of
+//! the line being typed (DECISIONS.md, 025, 026, 027). It serves three kinds of
 //! clients on one endpoint, told apart by the badge the kernel puts on
 //! their handle – which nobody can fake:
 //!
 //! - the keyboard driver (badge "keyboard"): keys (`userlib::keyboard`).
 //!   Editing as in a shell: arrows, Home/End, Delete, Backspace; Up and
 //!   Down bring back earlier lines. Enter finishes a line; Ctrl+C drops it
-//!   and is remembered until someone asks (`TAKE_INTERRUPT`).
+//!   and answers everyone waiting for it (`WAIT_INTERRUPT`) – or, if
+//!   nobody waits, the next one who does.
 //! - everyone else: lines of output (the log's protocol, so `println!`
 //!   works), `READ_LINE` to get the next finished line, `CLEAR`,
-//!   `TAKE_INTERRUPT` (`userlib::terminal`). That is the shell and the
+//!   `WAIT_INTERRUPT` (`userlib::terminal`). That is the shell and the
 //!   programs it starts.
 //!
 //! A finished line waits until someone reads it (type-ahead); readers wait
-//! in turn for lines. Every line shown also goes to the log – "typed:
+//! in turn for lines – a reader that ended while it waited (it was
+//! stopped) doesn't take a line with it: the next reader gets it. Every line shown also goes to the log – "typed:
 //! <line>" or the output as it is – so the boot test can follow along.
 //!
 //! The terminal touches neither the keyboard nor the screen itself.
@@ -30,10 +32,11 @@ mod panel;
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use alloc::vec::Vec;
 use editor::Editor;
 use panel::Panel;
 use userlib::keyboard::{CONTROL_C, Key};
-use userlib::terminal::{CLEAR, READ_LINE, TAKE_INTERRUPT};
+use userlib::terminal::{CLEAR, READ_LINE, WAIT_INTERRUPT};
 use userlib::{Attach, Error, Handle, Received, ReceivedMemory, Reply, abi};
 use userlib::{directory, display, exit, println, receive, reply};
 
@@ -50,7 +53,9 @@ struct Terminal {
     /// Those waiting in `READ_LINE`, first come first served: the duty to
     /// answer, and their message, which holds the page lent for the line.
     readers: VecDeque<(Reply, Received)>,
-    /// Ctrl+C was pressed and nobody has asked about it yet.
+    /// Those waiting for Ctrl+C.
+    interrupt_waiters: Vec<Reply>,
+    /// Ctrl+C was pressed while nobody waited for it.
     interrupted: bool,
     /// More than the line being typed changed: draw everything.
     lines_changed: bool,
@@ -70,6 +75,7 @@ extern "C" fn _start() -> ! {
         editor: Editor::default(),
         typed_ahead: VecDeque::new(),
         readers: VecDeque::new(),
+        interrupt_waiters: Vec::new(),
         interrupted: false,
         lines_changed: true,
     };
@@ -117,7 +123,11 @@ impl Terminal {
                 self.lines_changed = true;
                 [0; 4]
             }
-            (None, TAKE_INTERRUPT) => [0, u64::from(core::mem::take(&mut self.interrupted)), 0, 0],
+            (None, WAIT_INTERRUPT) if !core::mem::take(&mut self.interrupted) => {
+                self.interrupt_waiters.push(answer);
+                return;
+            }
+            (None, WAIT_INTERRUPT) => [0; 4],
             (None, _) => [abi::ERROR_BAD_ARGUMENT, 0, 0, 0],
             _ => {
                 let status = self.write(&message).err().map_or(0, |error| error.0);
@@ -134,7 +144,12 @@ impl Terminal {
             if let Some(panel) = &mut self.panel {
                 panel.finish_line(&alloc::format!("{dropped}^C"));
             }
-            self.interrupted = true;
+            if self.interrupt_waiters.is_empty() {
+                self.interrupted = true;
+            }
+            for waiter in self.interrupt_waiters.drain(..) {
+                let _ = reply(waiter, Attach::Nothing, [0; 4]);
+            }
             self.lines_changed = true;
             return;
         }
@@ -190,7 +205,11 @@ impl Terminal {
                 },
                 _ => [abi::ERROR_BAD_MODE, 0, 0, 0],
             };
-            let _ = reply(answer, Attach::Nothing, words);
+            if reply(answer, Attach::Nothing, words) == Err(Error(abi::ERROR_PEER_GONE)) {
+                // That reader was stopped while it waited: the line is
+                // still nobody's.
+                self.typed_ahead.push_front(line);
+            }
         }
     }
 

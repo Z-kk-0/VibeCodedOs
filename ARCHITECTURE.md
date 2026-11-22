@@ -108,14 +108,14 @@ sends a TLB shootdown (`arch/shootdown.rs`) to the cores that have that address 
 | `0xFF` | APIC spurious interrupt |
 
 System calls (`abi` crate, register table there): `int 0x80`, number in `rax`. `exit`, `sleep`,
-and the capability calls (DECISIONS 020, 021): `call`, `receive`, `reply`, `memory_new`, `drop`,
-`endpoint_new`, `mint`, `revoke`. Kernel objects answer `call` at once: the console prints, a
+and the capability calls (DECISIONS 020, 021, 027): `call`, `send`, `receive`, `reply`, `memory_new`,
+`drop`, `endpoint_new`, `mint`, `revoke`. Kernel objects answer `call` at once: the console prints, a
 `Program` starts a process, a `Child` says how it ended (or is stopped by its parent), a `Device` opens (its handle becomes the
 device's memory, mapped into the caller), `Ports` reads or writes an I/O port. An `Interrupt` answers
 when its device line fires.
 Programs use `userlib` (typed wrappers, `println!` via the `log` service, panic handler).
 
-Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020, 021): each process (`ipc/process.rs`) has
+Capabilities and IPC (`kernel/src/ipc/`, DECISIONS 020, 021, 027): each process (`ipc/process.rs`) has
 an address space, a handle table and what it waits for. A message is four words plus at most one
 handle, moved between the tasks' saved frames under the scheduler lock; every received message
 comes with a one-shot reply handle. Memory objects change hands by the rules in `ipc/transfer.rs`:
@@ -123,6 +123,15 @@ move (sender loses the mapping), lend `&` (read-only for both), lend `&mut` (len
 mapping) – a borrow ends with its reply handle. Endpoints (`ipc/endpoint.rs`) close when their
 last receiving end is gone and keep a generation per badge for `revoke`; queue waits can time out
 (`ipc/timeouts.rs`). The kernel starts only `init`, which wires everything else up.
+
+Waiting for several things at once (DECISIONS 027): `send` is a `call` that doesn't wait. The answer
+– the reply, or why there is none – is queued as a message on the sender's *mailbox*, an endpoint
+it receives on, tagged with a number it chose; children (their end) and interrupt lines (their
+next interrupt) answer the same way. So one `receive` waits for everything (`userlib::Mailbox`).
+A call is now either blocked (`Caller` without mailbox, result into its frame) or on its way
+(`Caller` with mailbox); what a `send` attaches travels with it (`transfer::Carried`). A borrow
+keeps lent memory alive by itself (`Arc<Memory>` in `Lend`), so a lender may end – stopped, even
+while waiting for its reply – without pulling frames out from under the borrower.
 
 Devices and caching (DECISIONS 023): a memory object is RAM or *device memory* (`ipc/memory.rs`)
 – same ownership rules, never zeroed or freed, and every mapping of it uses the device's caching
@@ -133,17 +142,18 @@ handle that `init` moves to `display`. Clients lend `display` their pixels (`use
 Device interrupts (DECISIONS 025): the I/O APIC (`arch/io_apic.rs`, wiring from the ACPI MADT) keeps
 every line masked except the ones handed out. When a routed line fires, the kernel acknowledges it
 and wakes the program waiting in `call` on its `Interrupt` handle (`ipc/interrupt.rs`) – the
-interrupt *is* the reply. Port I/O goes through a `Ports` handle (`ipc/ports.rs`): the kernel does
+interrupt *is* the reply – or posts the answer to the mailbox it named with `send`. Port I/O goes through a `Ports` handle (`ipc/ports.rs`): the kernel does
 the `in`/`out` for the ports asked for, up to four per call. `keyboard` holds both for the keyboard controller and
 calls `terminal` with each key (`userlib::keyboard`).
 
 The shell (DECISIONS 026) reads lines from the terminal (`userlib::terminal`) and starts the
 programs init gave it a handle for, each with a copy of the terminal as handle 0: the terminal
-speaks the log's protocol, so their `println!` lands on the screen.
+speaks the log's protocol, so their `println!` lands on the screen. It waits in its mailbox for
+the next line, the next Ctrl+C and every program's end at once (DECISIONS 027).
 
 | Program | Kind | Handles it starts with | What it proves |
 |---|---|---|---|
-| `init` | first program | 0 console, 1–14 programs, 15 screen, 16 keyboard ports, 17 keyboard interrupt | user space wires itself up |
+| `init` | first program | 0 console, 1–15 programs, 16 screen, 17 keyboard ports, 18 keyboard interrupt | user space wires itself up |
 | `log` | service | 0 log endpoint (receive), 1 console | the only one that can print |
 | `dir` (`directory`) | service | 0 log, 1 directory endpoint (receive) | names; parked lookups (reply handles) |
 | `shout` | service | 0 log, 1 directory (registers itself) | `&mut` borrow and move work |
@@ -154,10 +164,11 @@ speaks the log's protocol, so their `println!` lands on the screen.
 | `intruder` | attacker | 0 log | forged handles and kernel reads fail |
 | `display` | driver, service | 0 log, 1 directory, 2 screen (device) | a driver in user space; device memory, write-combining |
 | `paint` | program | 0 log, 1 directory | drawing through `display` with lent memory (the boot test's screenshot checks it) |
-| `keyboard` | driver | 0 log, 1 ports 0x60/0x64, 2 IRQ 1, 3 keys (sending end to `terminal`) | interrupts as replies; port I/O through a handle |
+| `keyboard` | driver | 0 log, 1 ports 0x60/0x64, 2 IRQ 1, 3 keys (sending end to `terminal`) | interrupts as answers in its mailbox; port I/O through a handle |
 | `terminal` | service | 0 log, 1 directory, 2 terminal endpoint (receive) | typing shows up on the screen; line editing, history; output and lines for the shell |
-| `shell` | program | 0 terminal, 1 directory, 2 program names, 3… programs (hello, count, intruder, giver, paint) | a capability shell: it can start only what it holds; programs' output goes where their handle 0 points; jobs, Ctrl+C |
+| `shell` | program | 0 terminal, 1 directory, 2 program names, 3… programs (hello, count, ask, intruder, giver, paint) | a capability shell: it can start only what it holds; programs' output goes where their handle 0 points; jobs, Ctrl+C; waits for everything at once |
 | `count` | program | 0 output, 1 arguments (page of text) | arguments as a handle; something to run in the background and to stop |
+| `ask` | program | 0 terminal | waits for a reply (a line) – and can be stopped all the same |
 
 ## Crates
 
@@ -175,7 +186,7 @@ speaks the log's protocol, so their `println!` lands on the screen.
 | `x86` | any + host | x86_64 formats as data (descriptors, exceptions, APIC/PIT registers, xAPIC and x2APIC IPIs, I/O APIC redirection entries, the page attribute table). Unit-tested. |
 | `capability` | any + host | Handle tables (index + generation) and the mapping area for memory objects. Unit-tested. |
 | `abi` | any + host | Kernel ↔ program contract: system call vector, numbers, registers, attach modes, error codes, badges, device info (pixel formats), port operations. |
-| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…), `spawn`/`wait`, opening devices, interrupts and ports, the directory, display, keyboard and terminal protocols, a 5×7 font, a heap (`alloc`), `println!`, panic handler. |
+| `userlib` | `x86_64-unknown-none` | What programs link against: typed IPC (`Memory`, `Attach`, `call`…; `Mailbox`, `send` and `Pending` for waiting on several things), `spawn`/`wait`/`watch`, opening devices, interrupts and ports, the directory, display, keyboard and terminal protocols, a 5×7 font, a heap (`alloc`), `println!`, panic handler. |
 | `programs/*` | `x86_64-unknown-none` | User programs and services, embedded into the kernel (table above). |
 | `xtask` | host | Build tool: `cargo xtask build / run / boot-test / test`; types on the emulated keyboard and checks QEMU screenshots. |
 
@@ -212,6 +223,9 @@ Done:
       `keyboard` driver and `terminal` in user space (DECISIONS 025)
 - [x] Shell: reads commands from the terminal, starts only the programs it holds, shows their
       output and how they ended (DECISIONS 026)
+- [x] Waiting for several things at once: `send` with answers in a mailbox – replies, children's
+      ends, interrupts; lent memory outlives its lender; stopping cuts even a reply wait short
+      (DECISIONS 027)
 
 Next: decided together with the owner – candidates are the open `design` and `idea` issues.
 
@@ -236,8 +250,9 @@ known limits below, `idea` for things worth considering.
   request at a time and copies whole areas (no double buffering).
 - Device interrupts (DECISIONS 025): only the 16 ISA IRQs (more needs PCI); the level-triggered
   path is untested in QEMU. Keyboard: US and German layouts, no dead keys.
-- Shell (DECISIONS 026): job ends are reported at the next command (no waiting on several things
-  at once); a program blocked on a reply that never comes can't be stopped.
+- `send` (DECISIONS 027): a sent call can't be taken back – it waits until a server takes it or
+  its endpoint closes (no timeout). A mailbox's queue has no bound. Several readers of the
+  terminal take turns for lines.
 - Frames are handed out one at a time; nothing allocates physically contiguous blocks yet.
 - Only tested in QEMU (q35). Real hardware: untested.
 - `cargo xtask` firmware/QEMU discovery is tested on Windows only; Linux/macOS paths are best effort.
